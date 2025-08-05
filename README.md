@@ -1,133 +1,103 @@
-# v26meme – Autonomous Crypto‑Trading Black‑Box 🛰️
+README.md
 
-> **Goal:** compound **\$200 → \$1 000 000** on U.S‑compliant spot pairs (Coinbase Pro) using an LLM‑generated, self‑evolving ensemble of systematic strategies. Drop the code + this README in a repo, add API keys to `.env`, run `python v26meme.py`, and the bot bootstraps itself.
+markdown
+Copy
+Edit
+# v26meme_full
 
----
+**100 % AI-Driven Solana/Memecoin Trading Bot**
 
-## 1 · Features
+A single-file, self-bootstrapping Python bot that autonomously compounds \$200 → \$1 000 000 (default 60-day horizon) via high-conviction, AI-generated strategies.  
 
-| Capability                  | Detail                                                                                                    |
-| --------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **Fully‑autonomous loop**   | One process pulls data, generates signals, sizes trades, executes (paper → real), logs, and self‑evolves. |
-| **LLM‑seeded edge**         | GPT‑4o‑mini creates starter strategies; hourly evolution hook ready for RL / genetic refactors.           |
-| **Capital‑adaptive sizing** | Fractional‑Kelly sizing capped at 25 % of bankroll, dynamic per‑strategy win‑rate CI.                     |
-| **Hard risk rails**         | 20 % daily draw‑down circuit‑breaker, liquidity filter (\$10k+) and slippage cap.                         |
-| **Zero‑touch deploy**       | Runtime installs missing Python deps, fetches data directly from exchange REST, no DB required.           |
-| **Budget‑fit infra**        | Runs fine on a \$5‑10/mo VPS or a free GitHub Codespace.                                                  |
+## Features
 
----
+- **Market Scanning**  
+  - Coinbase top-10 24 h movers (>20 %)  
+  - CoinGecko trending memecoins  
+  - GPT-4 venue selection for best liquidity  
 
-## 2 · Directory layout
+- **Opportunity Research**  
+  - GPT-4 bull vs. bear scoring → conviction ∈ [0,1]  
 
-```
-repo/
-├── v26meme.py        # single‑file bot (already in canvas)
-├── README.md         # ← you are here
-├── .env.example      # template for secrets
-└── state.json        # persist file (auto‑created)
-```
+- **Strategy Engineering**  
+  - GPT-4 generates full `async execute_strategy(state, opp)` code  
+  - Back-tests on 2 days of 5 min OHLC  
+  - Enforces Sharpe ≥ 1.2 & MaxDD ≥ –50 %  
 
----
+- **Position Sizing & Execution**  
+  - Fractional-Kelly (Wilson lower bound) sizing, cap tiers (3 %→30 %)  
+  - Simulated “paper” orders by default; real market orders when run with `REAL` flag  
+  - Trailing stops + hard stops (–30 %) & take-profit (+200 %)  
 
-## 3 · Quick Start
+- **Risk Management**  
+  - 50 % daily drawdown pause (6 h)  
+  - 90 % global kill-switch  
+
+- **Evolution & Self-Healing**  
+  - Hourly promote/retire strategies based on win-rate & Wilson score  
+  - Console, WebSocket & webhook alerts for key events  
+  - Built-in web dashboard:  
+    - JSON state → `http://<ip>:8000/state`  
+    - Live logs → `ws://<ip>:8000/ws`  
+
+## Getting Started
+
+### 1. Install Dependencies
 
 ```bash
-# 1 · clone & enter
-$ git clone https://github.com/<you>/v26meme.git
-$ cd v26meme
+pip install -r <(python v26meme_full.py --deps)
+2. First-Time Setup
+bash
+Copy
+Edit
+python v26meme_full.py
+You’ll be prompted to enter any missing keys:
 
-# 2 · set secrets (Coinbase keys + OpenAI)
-$ cp .env.example .env && nano .env
+OPENAI_API_KEY
 
-# 3 · run
-$ python v26meme.py
-$ tail -f v26meme.log   # follow logs
-```
+COINBASE_API_KEY
 
-`.env.example` template:
+COINBASE_SECRET
 
-```
-OPENAI_API_KEY=sk‑...
+Values are stored in .env for future runs.
+
+3. Paper-Trade
+bash
+Copy
+Edit
+python v26meme_full.py
+Runs in PAPER mode by default.
+
+Simulates all orders, logs PnL, evolves strategies.
+
+4. Go Live
+bash
+Copy
+Edit
+python v26meme_full.py REAL
+Switches to REAL mode.
+
+Places live market orders on configured exchanges.
+
+5. Monitor
+Dashboard: http://<server-ip>:8000/state
+
+Logs: Connect a WebSocket client to ws://<server-ip>:8000/ws
+
+Configuration
+.env keys:
+
+ini
+Copy
+Edit
+OPENAI_API_KEY=sk-...
 COINBASE_API_KEY=...
 COINBASE_SECRET=...
-COINBASE_PASSPHRASE=...
-```
+KRAKEN_API_KEY=...      # optional
+KRAKEN_SECRET=...       # optional
+ALERT_WEBHOOK=...       # optional Discord/Slack webhook URL
+State is persisted in state.json.
 
-> **Tip:** if you also have Kraken keys, export `KRAKEN_API_KEY` / `KRAKEN_SECRET` – the bot auto‑detects.
-
----
-
-## 4 · What happens on boot?
-
-1. **Dependency bootstrap** – installs `openai`, `ccxt`, `pandas`, `numpy`, etc.
-2. **LLM seeding** – `gpt‑4o‑mini` is asked (via structured function‑call) for three starter strategies (`momentum_tracker`, `mean_reversion`, `social_sentiment`).
-3. **Back‑test sanity‑check** – each strategy must hit **Sharpe > 1.2** and **Max DD < 20 %** on the last 1 000 × 5‑min BTC/USD candles.
-4. **Main loop** (every minute):
-
-   * pulls fresh Coinbase tickers;
-   * each strategy emits a JSON signal;
-   * fractional‑Kelly position sizing;
-   * paper trade (graduating to real once win‑rate ≥ 40 % on 50 trades & 7 days).
-5. **Evolution hook** – hourly placeholder ready to call LLM/RL to refactor or spawn new strategies.
-
-ASCII diagram:
-
-```
-┌──────── GPT‑4o ────────┐
-│  new_strategy() fn‑call│
-└───┬───────────┬───────┘
-    │           │
-┌───▼───┐   ┌───▼───┐ ...  ↻ hourly evolve
-│ strat │   │ strat │
-└─┬─────┘   └─────┬─┘
-  │ Kelly‑sized orders
-┌─▼───────────────┐
-│ Coinbase Pro API│
-└─────────────────┘
-```
-
----
-
-## 5 · Graduation logic (`PAPER` → `REAL`)
-
-| Condition             | Threshold               |
-| --------------------- | ----------------------- |
-| Trading days in PAPER | ≥ 7 days                |
-| Total trades          | ≥ 50                    |
-| Win rate              | ≥ 40 % (Wilson 95 % CI) |
-
-Meet all three? The bot flips `self.state.mode` to `REAL` and begins live orders.
-
----
-
-## 6 · Safety rails
-
-* **Daily Circuit‑Breaker:** pause if equity ≤ 80 % of starting‑day equity.
-* **Liquidity filter:** skip symbols with < \$10 000 depth at top‑of‑book.
-* **Kelly cap:** never risk > 25 % bankroll on any single strategy suggestion.
-* **Runtime sandbox:** strategy code compiled & exec’d in isolated namespace; banned keywords (`eval`, `exec`, `os.system`, etc.).
-
----
-
-## 7 · Extending the bot
-
-| Task                    | Where / How                                                                                                            |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Add RL evolution**    | Implement `FullyAutonomousTrader.evolve()` – feed bad performers into `stable_baselines3` or ask the LLM for refactor. |
-| **Plug real execution** | Fill in `execute_real_trade()` (placeholder in code) – map actions to `ccxt.create_market_buy_order` / `sell`.         |
-| **More markets**        | Append APIs (Kraken, Binance US) in `setup_exchanges()` with proper credential env vars.                               |
-| **Observability**       | Pipe logs to Grafana Cloud or add Prometheus client calls for metrics.                                                 |
-
----
-
-## 8 · Troubleshooting
-
-| Symptom                       | Fix                                                                                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------ |
-| `ModuleNotFoundError` on boot | The runtime installer should catch it; if not, `pip install -r <(python v26meme.py --print-req)` |
-| LLM quota errors              | Check `OPENAI_API_KEY` credit; fallback to `gpt‑4o-mini` instead of larger models.               |
-| Bot stops after drawdown      | Inspect `v26meme.log`, wait 24 h or edit `self.safety['max_daily_dd']` cautiously.               |
-
----
-
-
+License & Disclaimer
+High-risk experimental code.
+Use at your own peril. Strategies may incur large drawdowns or losses.
