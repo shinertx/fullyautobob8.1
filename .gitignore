@@ -98,6 +98,9 @@ v26meme.db*
 *.log
 env_validation_report.json
 .env
+.env.*
+.env.save
+nohup.out
 
 # Environment
 .venv/
