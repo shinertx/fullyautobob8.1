@@ -3081,23 +3081,29 @@ class AutonomousTrader:
 
                 if _to_float(volume_usd, 0.0) >= min_vol and change_pct_abs > 0.5 and spread_bps <= Config.MAX_SPREAD_BPS and depth_ok:
                     exchange_filtered += 1
-                    opportunities.append({
+                    # Build normalized opportunity schema
+                    opp = {
                         'symbol': symbol,
                         'exchange': exchange_name,
                         'price': _to_float(ticker.get('last'), 0.0),
-                        'volume': _to_float(volume_usd, 0.0),
-                        'change_24h': _to_float(change_pct, 0.0),
                         'bid': _to_float(ticker.get('bid'), 0.0),
                         'ask': _to_float(ticker.get('ask'), 0.0),
-                        'spread': ((_to_float(ticker.get('ask'), 0.0) - _to_float(ticker.get('bid'), 0.0)) / _to_float(ticker.get('last'), 1.0)) if _to_float(ticker.get('last'), 0.0) > 0 else 0.0,
                         'timestamp': datetime.utcnow(),
                         'current_price': _to_float(ticker.get('last'), 0.0),
-                        'volume_24h': _to_float(volume_usd, 0.0),
                         'high_24h': _to_float(ticker.get('high', ticker.get('last')), 0.0),
                         'low_24h': _to_float(ticker.get('low', ticker.get('last')), 0.0),
                         'open_24h': _to_float(ticker.get('open', ticker.get('last')), 0.0),
-                        'vwap': _to_float(ticker.get('vwap', ticker.get('last')), 0.0)
-                    })
+                        'vwap': _to_float(ticker.get('vwap', ticker.get('last')), 0.0),
+                        # Normalized fields
+                        'volume_24h_usd': _to_float(volume_usd, 0.0),
+                        'change_24h_pct': _to_float(change_pct, 0.0),
+                        'spread_bps': (((_to_float(ticker.get('ask'), 0.0) - _to_float(ticker.get('bid'), 0.0)) / _to_float(ticker.get('last'), 1.0)) * 10000.0) if _to_float(ticker.get('last'), 0.0) > 0 else 99999.0,
+                    }
+                    # Back-compat fields for older strategies/logs
+                    opp['volume'] = opp['volume_24h_usd']
+                    opp['change_24h'] = opp['change_24h_pct']
+                    opp['spread'] = (opp['spread_bps'] / 10000.0) if isinstance(opp['spread_bps'], (int,float)) else 0.0
+                    opportunities.append(opp)
 
             filtered_count += exchange_filtered
             log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $5k AND change > 0.5%)")
