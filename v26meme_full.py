@@ -94,7 +94,7 @@ class Config:
     MIN_PATTERN_SAMPLES = 10
     
     # Strategy Evolution
-    STRATEGY_EVOLUTION_INTERVAL = 7200  # Evolve every 2 hours
+    STRATEGY_EVOLUTION_INTERVAL = 900  # Evolve every 15 minutes
     MAX_STRATEGIES = 100
     STRATEGY_GENERATIONS = 10
     
@@ -576,6 +576,16 @@ class Database:
             strategies.append(strategy)
         
         return strategies
+
+    async def execute(self, query: str, params=None):
+        """Execute a database query with optional parameters."""
+        cursor = self.conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        self.conn.commit()
+        return cursor
 
 # ═══════════════════════════════ LEARNING MEMORY ═══════════════════════════════
 
@@ -1772,7 +1782,7 @@ class AdaptiveStrategyEngine:
         
         for pattern in patterns:
             # Skip if we already have a strategy for this exact pattern
-            strategy_name = f"Strat_{pattern['type']}_{pattern.get('symbol', 'multi')}_{int(time.time())}"
+            strategy_name = f"Strat_{pattern['type']}_{int(time.time())}"
             
             # Check for existing similar strategies
             existing_similar = any(
@@ -1839,10 +1849,12 @@ class AdaptiveStrategyEngine:
             pattern_details.append(f"Behavior: {pattern.get('behavior', 'resistance')}")
             pattern_details.append(f"Historical rejection rate: {pattern.get('rejection_rate', 0.7):.1%}")
             
-            entry_logic.append(f"# Check if current price is near psychological level (adaptable)")
+            entry_logic.append(f"# Check if current price is near psychological level (any symbol)")
             entry_logic.append(f"current_price = safe_get(opp, 'current_price', 0)")
-            entry_logic.append(f"# Look for psychological levels based on price (0.99, 9.99, 99.99 patterns)")
+            entry_logic.append(f"# Use helper function to detect psychological proximity")
             entry_logic.append(f"psychological_proximity = detect_psychological_level_proximity(current_price)")
+            entry_logic.append(f"# Only trade if volume and psychological level align")
+            entry_logic.append(f"volume_filter = safe_get(opp, 'volume_24h', 0) > 25000")
             
             if pattern.get('behavior') == 'resistance':
                 entry_logic.append(f"# Entry logic for resistance levels")
@@ -1915,61 +1927,30 @@ class AdaptiveStrategyEngine:
             entry_logic.append(f"imbalance_detected = momentum_signal and change_24h > 0")
             
             risk_params['stop_loss'] = 0.025
-            risk_params['take_profit'] = pattern.get('avg_return', 0.02)        # Build the complete prompt
+            risk_params['take_profit'] = pattern.get('avg_return', 0.02)        # Build the complete prompt - EMPHASIZE SYMBOL-AGNOSTIC
         prompt = f"""
-Generate a complete async Python trading strategy function based on this discovered pattern:
+Generate a complete async Python trading strategy function based on this discovered pattern.
 
-**IMPORTANT RULES**:
-- DO NOT use any import statements
-- numpy is available as 'np'
-- pandas is available as 'pd' 
-- datetime, math, and random are available
-- The function MUST be named 'execute_strategy'
-- It MUST be async (use 'async def')
-- It MUST return a dict with 'action' and 'conf' keys
-- CRITICAL: Strategy must work with ANY symbol, not just specific ones
-- DO NOT check for specific symbol names - work with any symbol passed in
+**ABSOLUTELY CRITICAL - THIS WILL FAIL IF NOT FOLLOWED**:
+1. NEVER EVER use specific symbol names like 'SWELL/USDC', 'PROVE/USDC', etc.
+2. The strategy MUST work with ANY symbol passed in the 'opp' parameter
+3. Base ALL decisions on NUMERIC CONDITIONS, not symbol names
+4. Example of FORBIDDEN code that will FAIL:
+   if opp['symbol'] == 'SWELL/USDC':  # NEVER DO THIS
+5. Example of CORRECT code:
+   if opp['volume_24h'] > 50000 and abs(opp['change_24h']) > 3:  # GOOD
 
-**CRITICAL SAFETY RULES**:
-1. ALWAYS use safe_divide(a, b, default) instead of a/b
-2. ALWAYS check if data exists: opp.get('key', default_value)
-3. ALWAYS return a dict with 'action' and 'conf' keys
-4. Set conf between 0.0 and 1.0 (not 0 to 100)
-5. Handle ALL exceptions internally
-6. DO NOT hardcode symbol names - make strategy work with any symbol
+**PATTERN TYPE**: {pattern['type']}
+**PATTERN METRICS** (use these for decisions, not symbol names):
+- Win Rate: {pattern.get('win_rate', 0.5):.1%}
+- Average Return: {pattern.get('avg_return', 0.02):.2%}
+- Confidence: {pattern.get('confidence', 0.6):.1%}
 
-**Available helper functions**:
-- safe_divide(a, b, default=0) - prevents division by zero
-- safe_get(dict, key, default) - safely gets dict values
-
-**Pattern Type**: {pattern['type']}
-**Description**: {pattern['description']}
-**Win Rate**: {pattern['win_rate']:.1%}
-**Average Return**: {pattern['avg_return']:.2%}
-**Confidence**: {pattern['confidence']:.1%}
-**Sample Size**: {pattern['sample_size']} observations
-
-**Pattern Details**:
-{chr(10).join(f"• {detail}" for detail in pattern_details)}
-
-**Current Growth Phase**: {phase}
-- Risk tolerance: {"Low (2% max)" if phase == "Discovery" else "Medium (5% max)" if phase == "Optimization" else "High (10% max)"}
-- Focus: {"Pattern validation" if phase == "Discovery" else "Optimizing winners" if phase == "Optimization" else "Maximizing returns"}
-
-Generate a complete async function with this signature:
-```python
-async def execute_strategy(state, opp):
-    '''
-    Strategy: {pattern['type']} pattern - works with any symbol
-    
-    Args:
-        state: SystemState object with equity, positions, etc.
-        opp: Dict with 'symbol', 'current_price', 'volume_24h', 'change_24h', 'high_24h', 'low_24h', 'exchange', etc.
-    
-    Returns:
-        Dict with 'action' ('buy'/'sell'/'hold'), 'conf' (0.0-1.0), and optional 'reason'
-    '''
-```
+The strategy should detect this pattern in ANY symbol by checking:
+1. Volume thresholds (e.g., volume_24h > 25000)
+2. Price movement (e.g., abs(change_24h) > 3.0)
+3. Technical conditions (e.g., price position in daily range)
+4. Time conditions (if applicable)
 
 **Entry Conditions to implement** (adapt these for ANY symbol):
 {chr(10).join(f"- {condition}" for condition in entry_logic)}
@@ -1989,6 +1970,34 @@ async def execute_strategy(state, opp):
 **CRITICAL**: Make this strategy work with any crypto symbol (BTC, ETH, altcoins, etc.). 
 The pattern should be symbol-agnostic and work based on price action, volume, time, etc.
 Make the strategy aggressive but intelligent - we need to reach $1M in 90 days from $200.
+
+Remember: This strategy detects a {pattern['type']} pattern that can occur in ANY cryptocurrency.
+DO NOT hardcode symbol names. Use only numeric thresholds and conditions.
+
+async def execute_strategy(state, opp):
+    '''
+    Pattern-based strategy that works with ANY crypto symbol.
+    
+    Args:
+        state: SystemState object
+        opp: Dict with 'symbol', 'current_price', 'volume_24h', 'change_24h', etc.
+    
+    Returns:
+        Dict with 'action' and 'conf' keys
+    '''
+    try:
+        # Extract opportunity data
+        symbol = safe_get(opp, 'symbol', '')
+        current_price = safe_get(opp, 'current_price', 0)
+        volume_24h = safe_get(opp, 'volume_24h', 0)
+        change_24h = safe_get(opp, 'change_24h', 0)
+        
+        # NEVER check for specific symbols - use pattern conditions only
+        # Apply pattern detection logic here...
+        
+        return {{'action': 'hold', 'conf': 0.0}}
+    except Exception as e:
+        return {{'action': 'hold', 'conf': 0.0, 'reason': str(e)}}
 """
         
         return prompt
@@ -2284,6 +2293,21 @@ Make the strategy aggressive but intelligent - we need to reach $1M in 90 days f
 
 # ═══════════════════════════ AUTONOMOUS TRADER ═════════════════════════════
 
+# ADD THIS HELPER FUNCTION TO THE SANDBOX
+def _detect_psychological_level_proximity(price: float) -> bool:
+    """Helper to check if a price is near a psychological level."""
+    if price <= 0: return False
+    
+    # Define key psychological levels
+    levels = [0.01, 0.05, 0.10, 0.25, 0.50, 0.99, 1.00, 5.00, 9.99, 10.00, 
+              25.00, 50.00, 99.00, 100.00, 250.00, 500.00, 999.00, 1000.00]
+    
+    for level in levels:
+        # Check if price is within 2% of the level
+        if abs(price - level) / level < 0.02:
+            return True
+    return False
+
 class AutonomousTrader:
     """
     The main orchestrator that brings everything together.
@@ -2322,10 +2346,6 @@ class AutonomousTrader:
                 except Exception as e:
                     log.error(f"Failed to connect to {exchange_name}: {e}")
         
-        if not self.exchanges:
-            log.error("❌ No exchanges configured!")
-            return False
-        
         # Initialize notification system
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             self.notifier = TelegramNotifier(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
@@ -2356,6 +2376,22 @@ class AutonomousTrader:
             self.state.strategies[strategy.id] = strategy
         
         log.info(f"📚 Loaded {len(self.state.strategies)} strategies")
+
+        # Bootstrap strategy generation if none exist
+        if not self.state.strategies:
+            log.info("🌱 No strategies found - generating initial strategies...")
+            # Get high-confidence patterns first
+            patterns = await self.learning_memory.get_high_confidence_patterns(limit=10)
+            if patterns:
+                log.info(f"📊 Found {len(patterns)} patterns for initial strategy generation")
+                # Generate strategies directly
+                await self.strategy_engine._generate_new_strategies_from_patterns(self.state)
+                # Save them
+                for strategy in self.state.strategies.values():
+                    await self.db.save_strategy(strategy)
+                log.info(f"✅ Generated {len(self.state.strategies)} initial strategies")
+            else:
+                log.warning("⚠️ No patterns available yet - will generate after discovery")
         
         # Determine initial mode based on configuration
         if os.getenv('TRADING_MODE') == 'LIVE':
@@ -2403,7 +2439,13 @@ class AutonomousTrader:
 
     async def _strategy_evolution_loop(self):
         """Continuously evolve and improve strategies."""
-        await asyncio.sleep(300)  # Initial delay to gather some patterns
+        # Generate immediately if no strategies exist
+        if not self.state.strategies:
+            log.info("🚀 No strategies found - generating immediately...")
+            await self.strategy_engine.evolve_strategies(self.state)
+        else:
+            # Only delay if we have strategies
+            await asyncio.sleep(300)
         
         while self.running:
             try:
@@ -2483,23 +2525,37 @@ class AutonomousTrader:
                     if not is_sane_ticker(symbol):
                         continue
                     
-                    # Calculate opportunity score based on volatility and volume
-                    volume_usd = ticker.get('quoteVolume') if ticker.get('quoteVolume') is not None else 0
-                    change_pct = abs(ticker.get('percentage')) if ticker.get('percentage') is not None else 0
+                    # DEFENSIVE VOLUME CALCULATION - works for both Kraken and Coinbase
+                    volume_usd = (ticker.get('quoteVolume')  # Standard path (Coinbase)
+                                 or (ticker.get('baseVolume', 0) * ticker.get('vwap', ticker.get('last', 0))))  # Kraken path
                     
-                    if volume_usd > 10000 and change_pct > 1:  # Active markets
+                    # DEFENSIVE PERCENTAGE CALCULATION
+                    change_pct = ticker.get('percentage')
+                    if change_pct is None and ticker.get('open') and ticker.get('last'):
+                        # Calculate manually for Kraken
+                        change_pct = ((ticker['last'] - ticker['open']) / ticker['open'] * 100) if ticker['open'] > 0 else 0
+                    change_pct_abs = abs(change_pct or 0)
+                    
+                    # Log anomalies for debugging
+                    if exchange_filtered < 5 and (not ticker.get('vwap') or not ticker.get('open')):
+                        log.debug(f"⚠️ {exchange_name} {symbol}: missing vwap={ticker.get('vwap')} or open={ticker.get('open')}")
+                    
+                    # RELAXED FILTERS for more opportunities
+                    if volume_usd > 5000 and change_pct_abs > 0.5:  # $5k volume, 0.5% change
                         exchange_filtered += 1
                         opportunities.append({
                             'symbol': symbol,
                             'exchange': exchange_name,
                             'price': ticker.get('last', 0),
                             'volume': volume_usd,
-                            'change_24h': ticker.get('percentage', 0),
+                            'change_24h': change_pct or 0,  # Keep signed value for direction
                             'bid': ticker.get('bid', 0),
                             'ask': ticker.get('ask', 0),
                             'spread': (ticker.get('ask', 0) - ticker.get('bid', 0)) / ticker.get('last', 1) if ticker.get('last') else 0,
                             'timestamp': datetime.utcnow(),
-                            # ADD THESE FIELDS:
+                            # ADD ALL FIELDS THE STRATEGIES NEED:
+                            'current_price': ticker.get('last', 0),
+                            'volume_24h': volume_usd,
                             'high_24h': ticker.get('high', ticker.get('last', 0)),
                             'low_24h': ticker.get('low', ticker.get('last', 0)),
                             'open_24h': ticker.get('open', ticker.get('last', 0)),
@@ -2507,10 +2563,11 @@ class AutonomousTrader:
                         })
                 
                 filtered_count += exchange_filtered
-                log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $10k AND change > 1%)")
+                log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $5k AND change > 0.5%)")
                 
             except Exception as e:
                 log.error(f"Error scanning {exchange_name}: {e}")
+                log.error(traceback.format_exc())
         
         # Sort by opportunity score (volume * volatility)
         opportunities.sort(
@@ -2523,7 +2580,12 @@ class AutonomousTrader:
         return opportunities[:100]  # Top 100 opportunities
 
     async def _execute_strategies(self, opp: Dict):
-        """Execute all active strategies on a market opportunity."""
+        """Execute all applicable strategies on a market opportunity."""
+        
+        opp['volume_24h'] = opp.get('volume', 0)
+        opp['change_24h'] = opp.get('change_24h', 0)
+        opp['high_24h'] = opp.get('high_24h', opp.get('price', 0))
+        opp['low_24h'] = opp.get('low_24h', opp.get('price', 0))
         
         # Only execute strategies in appropriate modes
         if self.state.mode == TradingMode.EMERGENCY:
@@ -2592,7 +2654,42 @@ class AutonomousTrader:
                     'enumerate': enumerate,
                     'zip': zip,
                     'any': any,
-                    'all': all
+                    'all': all,
+                    # ADD THESE EXCEPTION CLASSES
+                    'Exception': Exception,
+                    'ValueError': ValueError,
+                    'KeyError': KeyError,
+                    'TypeError': TypeError,
+                    'ZeroDivisionError': ZeroDivisionError,
+                    'AttributeError': AttributeError,
+                    'IndexError': IndexError,
+                    '__import__': __import__,
+                    # ADD THESE MISSING BUILTINS
+                    'print': lambda *args, **kwargs: None,  # No-op print for strategies
+                    '__name__': '__main__',  # Fake module name
+                    '__build_class__': __build_class__,  # For class definitions
+                    'type': type,
+                    'isinstance': isinstance,
+                    'hasattr': hasattr,
+                    'getattr': getattr,
+                    'setattr': setattr,
+                    'tuple': tuple,
+                    'set': set,
+                    'sorted': sorted,
+                    'reversed': reversed,
+                    'filter': filter,
+                    'map': map,
+                    'callable': callable,
+                    'iter': iter,
+                    'next': next,
+                    'property': property,
+                    'staticmethod': staticmethod,
+                    'classmethod': classmethod,
+                    'super': super,
+                    'object': object,
+                    'None': None,
+                    'True': True,
+                    'False': False
                 },
                 'np': np,  # Provide numpy
                 'pd': pd,  # Provide pandas
@@ -2603,7 +2700,8 @@ class AutonomousTrader:
                 'calculate_kelly_position': calculate_kelly_position,
                 # ADD THESE SAFETY FUNCTIONS:
                 'safe_divide': lambda a, b, default=0: a / b if b != 0 else default,
-                'safe_get': lambda d, key, default=0: d.get(key, default) if isinstance(d, dict) else default
+                'safe_get': lambda d, key, default=0: d.get(key, default) if isinstance(d, dict) else default,
+                'detect_psychological_level_proximity': _detect_psychological_level_proximity
             }
             
             # Execute the strategy code
@@ -3117,71 +3215,3 @@ class AutonomousTrader:
                 f"Total P&L: ${self.state.total_pnl:+.2f}\n"
                 f"ROI: {(self.state.equity / Config.INITIAL_CAPITAL - 1) * 100:+.1f}%"
             )
-        
-        log.info("👋 Shutdown complete.")
-
-    async def emergency_shutdown(self):
-        """Emergency shutdown - close everything immediately."""
-        log.error("🚨 EMERGENCY SHUTDOWN INITIATED")
-        
-        self.running = False
-        self.state.mode = TradingMode.EMERGENCY
-        
-        # Try to close positions
-        try:
-            for position in list(self.state.positions.values()):
-                await self._close_position(position, "EMERGENCY")
-        except:
-            pass
-        
-        # Force save state
-        try:
-            await self.db.save_state(self.state)
-        except:
-            pass
-        
-        # Alert
-        if self.notifier:
-            try:
-                await self.notifier.send_alert("🚨 EMERGENCY SHUTDOWN - Check logs!")
-            except:
-                pass
-        
-        # Exit
-        sys.exit(1)
-
-# ═══════════════════════════════ MAIN ENTRY POINT ═══════════════════════════════
-
-async def main():
-    """Main entry point for the v26meme autonomous trading system."""
-    
-    # Display startup banner
-    console.print("\n[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]")
-    console.print("[bold yellow]           v26meme Autonomous Trading System            [/bold yellow]")
-    console.print("[bold green]            $200 → $1M in 90 Days Challenge            [/bold green]")
-    console.print("[bold cyan]═══════════════════════════════════════════════════════[/bold cyan]\n")
-    
-    # Create and initialize trader
-    trader = AutonomousTrader()
-    
-    if not await trader.initialize():
-        log.error("❌ Failed to initialize system")
-        return
-    
-    # Start trading
-    console.print("[bold green]🚀 System initialized successfully![/bold green]")
-    console.print(f"[yellow]Mode: {trader.state.mode.value}[/yellow]")
-    console.print(f"[yellow]Initial Capital: ${Config.INITIAL_CAPITAL}[/yellow]")
-    console.print(f"[yellow]Target: ${Config.TARGET_CAPITAL:,} in {Config.TARGET_DAYS} days[/yellow]\n")
-    
-    # Run the system
-    await trader.run()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        console.print("\n[yellow]⛔ Interrupted by user[/yellow]")
-    except Exception as e:
-        console.print(f"\n[red]❌ Fatal error: {e}[/red]")
-        traceback.print_exc()

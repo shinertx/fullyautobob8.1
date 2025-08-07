@@ -29,7 +29,7 @@ echo "⏱️  Waiting 3 seconds for dashboard to start..."
 sleep 3
 
 echo "🤖 Starting Trading Bot"
-python v26meme_full.py &
+python v26meme_full.py > v26meme_full.log 2>&1 &
 BOT_PID=$!
 
 echo ""
