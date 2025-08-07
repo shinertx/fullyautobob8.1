@@ -29,17 +29,27 @@ echo "⏱️  Waiting 3 seconds for dashboard to start..."
 sleep 3
 
 echo "🤖 Starting Trading Bot"
-python v26meme_full.py > v26meme_full.log 2>&1 &
-BOT_PID=$!
+export TRADING_MODE=PAPER
+# Add a loop to keep the bot running
+while true; do
+    echo "🔄 Starting/Restarting trading bot..."
+    python v26meme_full.py > v26meme_full.log 2>&1 &
+    BOT_PID=$!
+    echo "🤖 Bot started with PID: $BOT_PID"
+    wait $BOT_PID
+    echo "⚠️ Bot process stopped. Restarting in 5 seconds..."
+    sleep 5
+done &
+BOT_LOOP_PID=$!
 
 echo ""
 echo "✅ System started successfully!"
 echo "📊 Dashboard: http://localhost:8000"
-echo "🤖 Bot Process ID: $BOT_PID"
+echo "🤖 Bot Loop Process ID: $BOT_LOOP_PID"
 echo "🌐 Dashboard Process ID: $DASHBOARD_PID"
 echo ""
-echo "Press Ctrl+C to stop both services"
+echo "Press Ctrl+C to stop all services"
 
 # Wait for interrupt
-trap 'echo "🛑 Stopping services..."; kill $BOT_PID $DASHBOARD_PID 2>/dev/null; exit 0' INT
+trap 'echo "🛑 Stopping services..."; kill $BOT_LOOP_PID $DASHBOARD_PID 2>/dev/null; exit 0' INT
 wait

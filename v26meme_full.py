@@ -3215,3 +3215,83 @@ class AutonomousTrader:
                 f"Total P&L: ${self.state.total_pnl:+.2f}\n"
                 f"ROI: {(self.state.equity / Config.INITIAL_CAPITAL - 1) * 100:+.1f}%"
             )
+        
+        log.info("✅ Shutdown complete")
+
+    async def emergency_shutdown(self):
+        """Emergency shutdown in case of critical error."""
+        log.error("🆘 EMERGENCY SHUTDOWN INITIATED")
+        
+        self.running = False
+        self.state.mode = TradingMode.EMERGENCY
+        
+        # Try to close positions if possible
+        try:
+            for position in list(self.state.positions.values()):
+                await self._close_position(position, "EMERGENCY SHUTDOWN")
+        except:
+            pass
+        
+        # Try to save state
+        try:
+            await self.db.save_state(self.state)
+        except:
+            pass
+        
+        # Force cancel all tasks
+        for task in self.tasks:
+            task.cancel()
+        
+        if self.notifier:
+            try:
+                await self.notifier.send_alert("🆘 EMERGENCY SHUTDOWN - Check logs immediately!")
+            except:
+                pass
+
+# ═══════════════════════════════ MAIN ENTRY POINT ═══════════════════════════════
+
+async def main():
+    """Main entry point for the autonomous trading system."""
+    
+    # Setup logging with more detail
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler(f"v26meme_full.log"),
+            logging.StreamHandler()
+        ]
+    )
+    
+    log.info("=" * 80)
+    log.info("🚀 v26meme AUTONOMOUS TRADING SYSTEM v26.0.0")
+    log.info("💎 Target: $200 → $1,000,000 in 90 days")
+    log.info("=" * 80)
+    
+    # Create and initialize trader
+    trader = AutonomousTrader()
+    
+    try:
+        success = await trader.initialize()
+        if not success:
+            log.error("Failed to initialize system")
+            return
+        
+        # Run the system
+        await trader.run()
+        
+    except KeyboardInterrupt:
+        log.info("⛔ Shutdown requested by user...")
+        await trader.shutdown()
+    except Exception as e:
+        log.error(f"💀 FATAL ERROR: {e}")
+        log.error(traceback.format_exc())
+        await trader.emergency_shutdown()
+
+if __name__ == "__main__":
+    # Set trading mode from environment
+    if os.getenv('TRADING_MODE') == 'LIVE':
+        log.warning("⚠️ LIVE TRADING MODE ACTIVE - REAL MONEY AT RISK!")
+    
+    # Run the async main function
+    asyncio.run(main())
