@@ -1,0 +1,16 @@
+pytest
+pytest-asyncio
+mypy
+pylint
+flake8
+bandit
+radon
+vulture
+psutil
+python-dotenv
+numpy
+pandas
+scipy
+ccxt
+openai
+nest_asyncio
