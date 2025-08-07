@@ -41,6 +41,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 import nest_asyncio
 nest_asyncio.apply()
 load_dotenv()
+from backtester import quick_backtest
 
 # ═══════════════════════════════ CONFIGURATION ═══════════════════════════════
 
@@ -49,9 +50,9 @@ class Config:
     
     # Core Settings
     VERSION = "26.0.0"
-    INITIAL_CAPITAL = 200.0
-    TARGET_CAPITAL = 1_000_000.0
-    TARGET_DAYS = 90
+    INITIAL_CAPITAL = float(os.getenv("INITIAL_CAPITAL", 200.0))
+    TARGET_CAPITAL = float(os.getenv("TARGET_CAPITAL", 1_000_000.0))
+    TARGET_DAYS = int(os.getenv("TARGET_DAYS", 90))
     
     # API Keys (loaded from environment)
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
@@ -82,11 +83,12 @@ class Config:
             
         return exchanges
     
-    # Trading Parameters
-    MIN_TRADE_SIZE = 10.0  # Minimum $10 per trade
-    MAX_POSITION_SIZE = 0.1  # Max 10% of equity per position
-    STOP_LOSS_PCT = 0.05  # 5% stop loss
-    TAKE_PROFIT_PCT = 0.15  # 15% take profit
+    # Trading Parameters (env-overridable)
+    MIN_TRADE_SIZE = float(os.getenv("MIN_ORDER_NOTIONAL", 10.0))  # Minimum $ per trade
+    MAX_POSITION_SIZE = float(os.getenv("MAX_POSITION_PCT", 0.10))  # Max fraction of equity per position
+    STOP_LOSS_PCT = float(os.getenv("STOP_LOSS_PCT", 0.05))
+    TAKE_PROFIT_PCT = float(os.getenv("TAKE_PROFIT_PCT", 0.15))
+    FEE_RATE = float(os.getenv("FEE_RATE", 0.0005))  # 5 bps default
     
     # Pattern Discovery
     PATTERN_DISCOVERY_INTERVAL = 3600  # Run every hour
@@ -94,20 +96,41 @@ class Config:
     MIN_PATTERN_SAMPLES = 10
     
     # Strategy Evolution
-    STRATEGY_EVOLUTION_INTERVAL = 900  # Evolve every 15 minutes
+    STRATEGY_EVOLUTION_INTERVAL = int(os.getenv("STRATEGY_EVOLUTION_INTERVAL", 900))  # Evolve every 15 minutes
     MAX_STRATEGIES = 100
     STRATEGY_GENERATIONS = 10
     
     # Risk Management
-    MAX_DAILY_LOSS = 0.1  # Max 10% daily loss
-    MAX_DRAWDOWN = 0.2  # Max 20% drawdown
-    KELLY_FRACTION = 0.25  # Conservative Kelly
+    MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_DRAWDOWN", 0.10))  # Max daily drawdown fraction
+    MAX_DRAWDOWN = float(os.getenv("MAX_DRAWDOWN", 0.20))
+    KELLY_FRACTION = float(os.getenv("FRACTIONAL_KELLY_CAP", 0.25))  # Fractional Kelly cap
     
     # Database
     DB_PATH = "v26meme.db"
     
+    # Feature Flags
+    FEED_LISTING = os.getenv("FEED_LISTING", "false").lower() == "true"
+    FEED_TWITTER = os.getenv("FEED_TWITTER", "false").lower() == "true"
+    FEED_WHALE = os.getenv("FEED_WHALE", "false").lower() == "true"
+    FEED_WEEKEND = os.getenv("FEED_WEEKEND", "false").lower() == "true"
+    GENETIC_V2 = os.getenv("GENETIC_V2", "false").lower() == "true"
+    RISK_GUARDIAN = os.getenv("RISK_GUARDIAN", "true").lower() == "true"
+    DISCOVERY_DISABLE_ON = set([s.strip() for s in os.getenv("DISCOVERY_DISABLE_ON", "").split(",") if s.strip()])
+
+    # Liquidity Filters (env-overridable)
+    ALLOWED_QUOTES = set([s.strip() for s in os.getenv("ALLOWED_QUOTES", "USD,USDC,EUR").split(",") if s.strip()])
+    MIN_VOLUME_USD_PAPER = float(os.getenv("MIN_VOLUME_USD_PAPER", 5000))
+    MIN_VOLUME_USD_MICRO = float(os.getenv("MIN_VOLUME_USD_MICRO", 100000))
+    MIN_VOLUME_USD_ACTIVE = float(os.getenv("MIN_VOLUME_USD_ACTIVE", 500000))
+    MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", 50))  # 50 bps = 0.5%
+    CHECK_ORDERBOOK_DEPTH = os.getenv("CHECK_ORDERBOOK_DEPTH", "true").lower() == "true"
+    MIN_OB_DEPTH_USD = float(os.getenv("MIN_OB_DEPTH_USD", 5000))  # Top 5 levels per side
+
+    # Mode
+    MODE = os.getenv("MODE", "PAPER").strip().lower()
+
     # Logging
-    LOG_LEVEL = "INFO"
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
     LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
 # ═══════════════════════════════ LOGGING SETUP ═══════════════════════════════
@@ -206,6 +229,7 @@ class SystemState:
     mode: TradingMode = TradingMode.PAPER
     equity: float = Config.INITIAL_CAPITAL
     cash: float = Config.INITIAL_CAPITAL
+    equity_start_of_day: float = Config.INITIAL_CAPITAL
     positions: Dict[str, Position] = field(default_factory=dict)
     strategies: Dict[str, Strategy] = field(default_factory=dict)
     daily_pnl: float = 0.0
@@ -223,7 +247,7 @@ def is_sane_ticker(symbol: str) -> bool:
         return False
     
     # Avoid test/delisted tokens
-    blacklist = ['TEST', 'DEMO', 'DOWN', 'UP', 'BULL', 'BEAR', '2S', '2L', '3S', '3L']
+    blacklist = ['DEMO', 'DOWN', 'UP', 'BULL', 'BEAR', '2S', '2L', '3S', '3L']
     for term in blacklist:
         if term in symbol.upper():
             return False
@@ -234,8 +258,13 @@ def is_sane_ticker(symbol: str) -> bool:
     
     return quote in valid_quotes
 
-def calculate_kelly_position(win_rate: float, avg_win: float, avg_loss: float, 
-                            kelly_fraction: float = 0.25) -> float:
+def calculate_kelly_position(
+    win_rate: float,
+    avg_win: float,
+    avg_loss: float,
+    max_position_pct: float = 0.25,
+    kelly_fraction: float = Config.KELLY_FRACTION,
+) -> float:
     """
     Calculate optimal position size using Kelly Criterion.
     
@@ -248,21 +277,23 @@ def calculate_kelly_position(win_rate: float, avg_win: float, avg_loss: float,
     Returns:
         Fraction of capital to risk (0-1)
     """
-    if avg_loss <= 0 or win_rate <= 0 or win_rate >= 1:
+    if avg_loss <= 0 or win_rate <= 0 or win_rate > 1 or avg_win <= 0:
         return 0.0
     
     # Kelly formula: f = (p*b - q) / b
     # where p = win_rate, q = 1-win_rate, b = avg_win/avg_loss
     q = 1 - win_rate
-    b = avg_win / avg_loss
+    b = avg_win / avg_loss if avg_loss != 0 else 0
+    if b == 0:
+        return 0.0
     
     kelly = (win_rate * b - q) / b
     
     # Apply fraction and cap
     position_size = kelly * kelly_fraction
     
-    # Never risk more than 10% on a single trade
-    return min(max(0.0, position_size), 0.1)
+    # Cap by configured maximum
+    return min(max(0.0, position_size), max_position_pct)
 
 def extract_params(code: str) -> Dict[str, Any]:
     """Extract numeric parameters from strategy code for mutation."""
@@ -308,10 +339,6 @@ class Database:
         import sqlite3
         self.conn = sqlite3.connect(self.db_path)
         cursor = self.conn.cursor()
-        
-        # Drop old tables to recreate with correct schema
-        cursor.execute('DROP TABLE IF EXISTS system_state')
-        cursor.execute('DROP TABLE IF EXISTS strategies')
         
         # Patterns table
         cursor.execute('''
@@ -396,7 +423,36 @@ class Database:
                 timestamp TIMESTAMP
             )
         ''')
+
+        # Current positions table for dashboard/state sync
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS current_positions (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT,
+                symbol TEXT,
+                exchange TEXT,
+                side TEXT,
+                amount REAL,
+                entry_price REAL,
+                current_price REAL,
+                pnl REAL,
+                pnl_pct REAL,
+                opened_at TIMESTAMP,
+                stop_loss REAL,
+                take_profit REAL
+            )
+        ''')
         
+        # Seen markets to detect new listings per exchange
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS seen_markets (
+                exchange TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                first_seen TIMESTAMP NOT NULL,
+                PRIMARY KEY (exchange, symbol)
+            )
+        ''')
+
         self.conn.commit()
         
         # Create current_positions table for dashboard
@@ -440,6 +496,16 @@ class Database:
             pattern.usage_count,
             pattern.success_count
         ))
+        self.conn.commit()
+
+    def get_seen_markets(self, exchange: str) -> set:
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT symbol FROM seen_markets WHERE exchange = ?', (exchange,))
+        return {row[0] for row in cursor.fetchall()}
+
+    def mark_market_seen(self, exchange: str, symbol: str):
+        cursor = self.conn.cursor()
+        cursor.execute('INSERT OR IGNORE INTO seen_markets(exchange, symbol, first_seen) VALUES(?, ?, ?)', (exchange, symbol, datetime.utcnow().isoformat()))
         self.conn.commit()
 
     async def save_strategy(self, strategy: Strategy):
@@ -707,6 +773,12 @@ class OpenAIManager:
         self.client = AsyncOpenAI(api_key=api_key)
         self.total_tokens_used = 0
         self.generation_count = 0
+        # Simple prompt cache to reduce duplicate generations
+        self._generation_cache: Dict[str, str] = {}
+        # Rate limiting (very simple token budget per hour)
+        self._token_budget_per_hour = int(os.getenv("OPENAI_TOKENS_PER_HOUR", "200000"))
+        self._token_used_window = 0
+        self._window_start_ts = time.time()
         
     async def generate_strategy(self, prompt: str) -> str:
         """
@@ -714,6 +786,26 @@ class OpenAIManager:
         Returns Python code for the strategy.
         """
         try:
+            # Check cache
+            cache_key = hashlib.sha256(prompt.encode()).hexdigest()
+            if cache_key in self._generation_cache:
+                return self._generation_cache[cache_key]
+
+            # Token window reset
+            now = time.time()
+            if now - self._window_start_ts >= 3600:
+                self._window_start_ts = now
+                self._token_used_window = 0
+
+            # Simple budget check
+            est_tokens = min(2000, self._token_budget_per_hour)  # rough estimate
+            if self._token_used_window + est_tokens > self._token_budget_per_hour:
+                log.warning("⚠️ OpenAI token budget reached for this hour. Skipping generation.")
+                return """
+async def execute_strategy(state, opp):
+    return {"action": "hold", "conf": 0.0, "reason": "Budget limit"}
+"""
+
             response = await self.client.chat.completions.create(
                 model="gpt-4-turbo",
                 messages=[
@@ -735,6 +827,7 @@ class OpenAIManager:
             if response.usage:
                 self.total_tokens_used += response.usage.total_tokens
                 self.generation_count += 1
+                self._token_used_window += response.usage.total_tokens
                 log.info(f"🤖 Generated strategy #{self.generation_count} ({response.usage.total_tokens} tokens)")
 
             if "```python" in code:
@@ -742,7 +835,10 @@ class OpenAIManager:
             elif "```" in code:
                 code = code.split("```")[1].split("```")[0]
             
-            return code.strip()
+            code = code.strip()
+            # Cache result
+            self._generation_cache[cache_key] = code
+            return code
             
         except Exception as e:
             log.error(f"OpenAI generation failed: {e}")
@@ -914,6 +1010,15 @@ class PatternDiscoveryEngine:
             self._discover_volatility_patterns(),
             self._discover_microstructure_patterns()
         ]
+
+        # Optional discovery modules
+        if Config.FEED_LISTING:
+            tasks.append(self._discover_listing_events())
+        # Weekend behavior patterns
+        if Config.FEED_WEEKEND:
+            tasks.append(self._discover_weekend_patterns())
+        # Cross-exchange spreads/stat-arb
+        tasks.append(self._discover_cross_exchange_spreads())
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -1090,8 +1195,48 @@ class PatternDiscoveryEngine:
         
         # Focus on top movers
         for exchange_name, exchange in self.exchanges.items():
+            if exchange_name in Config.DISCOVERY_DISABLE_ON:
+                log.warning(f"Skipping volume discovery on {exchange_name} due to DISCOVERY_DISABLE_ON flag")
+                continue
             try:
-                tickers = await exchange.fetch_tickers()
+                # Load markets first to avoid provider-specific "index out of range" during parsing
+                try:
+                    await exchange.load_markets()
+                except Exception:
+                    pass
+                # Coinbase Advanced Trade often lacks 5m/15m OHLCV. Skip if timeframe unsupported.
+                if hasattr(exchange, 'timeframes') and isinstance(exchange.timeframes, dict):
+                    if '15m' not in exchange.timeframes:
+                        log.warning(f"{exchange_name} lacks 15m timeframe; skipping volume/time/volatility discovery")
+                        return
+                # Build tickers robustly for Coinbase
+                if exchange_name == 'coinbase':
+                    try:
+                        await exchange.load_markets()
+                    except Exception:
+                        pass
+                    try:
+                        markets = await exchange.fetch_markets()
+                    except Exception:
+                        markets = []
+                    symbols = []
+                    for m in markets:
+                        sym = m.get('symbol')
+                        if not sym or '/' not in sym or not m.get('active'):
+                            continue
+                        quote = m.get('quote') or (sym.split('/')[-1] if '/' in sym else '')
+                        if quote in ('USD','USDC','EUR'):
+                            symbols.append(sym)
+                        if len(symbols) >= 100:
+                            break
+                    tickers = {}
+                    for sym in symbols:
+                        try:
+                            tickers[sym] = await exchange.fetch_ticker(sym)
+                        except Exception:
+                            continue
+                else:
+                    tickers = await exchange.fetch_tickers()
                 
                 # Sort by volume
                 sorted_tickers = sorted(
@@ -1166,9 +1311,46 @@ class PatternDiscoveryEngine:
         log.debug("⏰ Discovering time-based patterns...")
         
         for exchange_name, exchange in self.exchanges.items():
+            if exchange_name in Config.DISCOVERY_DISABLE_ON:
+                log.warning(f"Skipping time-based discovery on {exchange_name} due to DISCOVERY_DISABLE_ON flag")
+                continue
             try:
                 # Get a diverse set of symbols
-                tickers = await exchange.fetch_tickers()
+                try:
+                    await exchange.load_markets()
+                except Exception:
+                    pass
+                if hasattr(exchange, 'timeframes') and isinstance(exchange.timeframes, dict):
+                    if '5m' not in exchange.timeframes and '15m' not in exchange.timeframes and '1h' not in exchange.timeframes:
+                        log.warning(f"{exchange_name} lacks required timeframes; skipping microstructure discovery")
+                        return
+                if exchange_name == 'coinbase':
+                    try:
+                        await exchange.load_markets()
+                    except Exception:
+                        pass
+                    try:
+                        markets = await exchange.fetch_markets()
+                    except Exception:
+                        markets = []
+                    tickers = {}
+                    count = 0
+                    for m in markets:
+                        sym = m.get('symbol')
+                        if not sym or '/' not in sym or not m.get('active') or not is_sane_ticker(sym):
+                            continue
+                        quote = m.get('quote') or (sym.split('/')[-1] if '/' in sym else '')
+                        if quote not in ('USD','USDC','EUR'):
+                            continue
+                        try:
+                            tickers[sym] = await exchange.fetch_ticker(sym)
+                            count += 1
+                            if count >= 40:
+                                break
+                        except Exception:
+                            continue
+                else:
+                    tickers = await exchange.fetch_tickers()
                 symbols = [s for s in tickers.keys() if is_sane_ticker(s)][:20]
                 
                 for symbol in symbols:
@@ -1257,6 +1439,9 @@ class PatternDiscoveryEngine:
         ]
         
         for exchange_name, exchange in self.exchanges.items():
+            if exchange_name in Config.DISCOVERY_DISABLE_ON:
+                log.warning(f"Skipping psychological discovery on {exchange_name} due to DISCOVERY_DISABLE_ON flag")
+                continue
             try:
                 tickers = await exchange.fetch_tickers()
                 
@@ -1350,6 +1535,9 @@ class PatternDiscoveryEngine:
         ]
         
         for exchange_name, exchange in self.exchanges.items():
+            if exchange_name in Config.DISCOVERY_DISABLE_ON:
+                log.warning(f"Skipping correlation discovery on {exchange_name} due to DISCOVERY_DISABLE_ON flag")
+                continue
             try:
                 for symbol1, symbol2 in correlation_pairs:
                     try:
@@ -1435,13 +1623,47 @@ class PatternDiscoveryEngine:
         log.debug("📈 Discovering volatility patterns...")
         
         for exchange_name, exchange in self.exchanges.items():
+            if exchange_name in Config.DISCOVERY_DISABLE_ON:
+                log.warning(f"Skipping microstructure discovery on {exchange_name} due to DISCOVERY_DISABLE_ON flag")
+                continue
             try:
-                tickers = await exchange.fetch_tickers()
-                volatile_symbols = sorted(
-                    [(s, t) for s, t in tickers.items() if is_sane_ticker(s) and t.get('percentage') is not None and abs(t.get('percentage', 0)) > 5],
-                    key=lambda x: abs(x[1].get('percentage', 0)),
-                    reverse=True
-                )[:20]  # Top 20 movers
+                if exchange_name == 'coinbase':
+                    try:
+                        await exchange.load_markets()
+                    except Exception:
+                        pass
+                    try:
+                        markets = await exchange.fetch_markets()
+                    except Exception:
+                        markets = []
+                    tickers = {}
+                    count = 0
+                    for m in markets:
+                        sym = m.get('symbol')
+                        if not sym or '/' not in sym or not m.get('active') or not is_sane_ticker(sym):
+                            continue
+                        quote = m.get('quote') or (sym.split('/')[-1] if '/' in sym else '')
+                        if quote not in ('USD','USDC','EUR'):
+                            continue
+                        try:
+                            tickers[sym] = await exchange.fetch_ticker(sym)
+                            count += 1
+                            if count >= 80:
+                                break
+                        except Exception:
+                            continue
+                    volatile_symbols = sorted(
+                        [(s, t) for s, t in tickers.items() if t.get('percentage') is not None and abs(t.get('percentage') or 0) > 5],
+                        key=lambda x: abs(x[1].get('percentage') or 0),
+                        reverse=True
+                    )[:20]
+                else:
+                    tickers = await exchange.fetch_tickers()
+                    volatile_symbols = sorted(
+                        [(s, t) for s, t in tickers.items() if is_sane_ticker(s) and t.get('percentage') is not None and abs(t.get('percentage', 0)) > 5],
+                        key=lambda x: abs(x[1].get('percentage', 0)),
+                        reverse=True
+                    )[:20]
                 
                 for symbol, _ in volatile_symbols:
                     try:
@@ -1531,12 +1753,43 @@ class PatternDiscoveryEngine:
                 
             try:
                 # Focus on liquid pairs
-                tickers = await exchange.fetch_tickers()
-                liquid_symbols = sorted(
-                    [(s, t) for s, t in tickers.items() if is_sane_ticker(s) and t.get('quoteVolume') is not None and t.get('quoteVolume', 0) > 100000],
-                    key=lambda x: x[1].get('quoteVolume', 0),
-                    reverse=True
-                )[:10]  # Top 10 most liquid
+                if exchange_name == 'coinbase':
+                    try:
+                        await exchange.load_markets()
+                    except Exception:
+                        pass
+                    try:
+                        markets = await exchange.fetch_markets()
+                    except Exception:
+                        markets = []
+                    tickers = {}
+                    count = 0
+                    for m in markets:
+                        sym = m.get('symbol')
+                        if not sym or '/' not in sym or not m.get('active') or not is_sane_ticker(sym):
+                            continue
+                        quote = m.get('quote') or (sym.split('/')[-1] if '/' in sym else '')
+                        if quote not in ('USD','USDC','EUR'):
+                            continue
+                        try:
+                            tickers[sym] = await exchange.fetch_ticker(sym)
+                            count += 1
+                            if count >= 80:
+                                break
+                        except Exception:
+                            continue
+                    liquid_symbols = sorted(
+                        [(s, t) for s, t in tickers.items() if (t.get('quoteVolume') or 0) > 100000],
+                        key=lambda x: (x[1].get('quoteVolume') or 0),
+                        reverse=True
+                    )[:10]
+                else:
+                    tickers = await exchange.fetch_tickers()
+                    liquid_symbols = sorted(
+                        [(s, t) for s, t in tickers.items() if is_sane_ticker(s) and t.get('quoteVolume') is not None and t.get('quoteVolume', 0) > 100000],
+                        key=lambda x: x[1].get('quoteVolume', 0),
+                        reverse=True
+                    )[:10]
                 
                 for symbol, ticker in liquid_symbols:
                     try:
@@ -1613,6 +1866,149 @@ class PatternDiscoveryEngine:
                         
             except Exception as e:
                 log.error(f"Error discovering microstructure patterns: {e}")
+
+    async def _discover_cross_exchange_spreads(self):
+        """Discover cross-exchange spread opportunities between connected exchanges."""
+        if len(self.exchanges) < 2:
+            return
+        log.debug("🔁 Discovering cross-exchange spreads...")
+        try:
+            # Select a small universe of major symbols present on both exchanges
+            per_exchange_markets = {}
+            for name, ex in self.exchanges.items():
+                try:
+                    await ex.load_markets()
+                    per_exchange_markets[name] = set(ex.symbols or [])
+                except Exception:
+                    per_exchange_markets[name] = set()
+            common_symbols = None
+            for s in per_exchange_markets.values():
+                common_symbols = s if common_symbols is None else (common_symbols & s)
+            if not common_symbols:
+                return
+            # Filter to majors
+            majors = [s for s in common_symbols if any(s.endswith(q) for q in ('/USD','/USDC','/EUR'))]
+            majors = majors[:30]
+
+            exchange_names = list(self.exchanges.keys())
+            if len(exchange_names) < 2:
+                return
+            a, b = exchange_names[0], exchange_names[1]
+            ex_a, ex_b = self.exchanges[a], self.exchanges[b]
+
+            for sym in majors:
+                try:
+                    ta = await ex_a.fetch_ticker(sym)
+                    tb = await ex_b.fetch_ticker(sym)
+                    pa = float(ta.get('last') or ta.get('close') or 0)
+                    pb = float(tb.get('last') or tb.get('close') or 0)
+                    if pa <= 0 or pb <= 0:
+                        continue
+                    spread_pct = (pa - pb) / ((pa + pb) / 2.0)
+                    if abs(spread_pct) > 0.005:  # > 0.5%
+                        direction = f"{a}->{b}" if spread_pct > 0 else f"{b}->{a}"
+                        pattern = {
+                            'type': 'cross_exchange_spread',
+                            'symbol': sym,
+                            'exchange': f"{a}_{b}",
+                            'avg_return': float(abs(spread_pct)),
+                            'win_rate': 0.6,  # placeholder until live-tested
+                            'sample_size': 1,
+                            'description': f"{sym} spread {spread_pct:+.2%} ({direction})",
+                            'confidence': float(min(0.9, abs(spread_pct) * 50)),
+                            'direction': direction
+                        }
+                        await self.learning_memory.save_pattern(pattern)
+                        log.info(f"💡 Discovered cross-exchange spread: {pattern['description']}")
+                except Exception:
+                    continue
+        except Exception as e:
+            log.error(f"Error discovering cross-exchange spreads: {e}")
+
+    async def _discover_listing_events(self):
+        """Detect new listings on each exchange as event-driven opportunities."""
+        if not isinstance(self.exchanges, dict):
+            return
+        log.debug("📰 Discovering listing events...")
+        try:
+            for name, ex in self.exchanges.items():
+                try:
+                    await ex.load_markets()
+                    current = set(ex.symbols or [])
+                except Exception:
+                    current = set()
+                seen = set()
+                try:
+                    seen = self.learning_memory.db.get_seen_markets(name)
+                except Exception:
+                    pass
+                new_symbols = [s for s in current if s not in seen and '/' in s]
+                for sym in new_symbols:
+                    try:
+                        # Mark seen to avoid repeats
+                        self.learning_memory.db.mark_market_seen(name, sym)
+                        # Seed a pattern for immediate momentum on fresh listings
+                        pattern = {
+                            'type': 'new_listing_momentum',
+                            'symbol': sym,
+                            'exchange': name,
+                            'avg_return': 0.01,
+                            'win_rate': 0.55,
+                            'sample_size': 1,
+                            'description': f"{name} new listing detected: {sym}",
+                            'confidence': 0.5
+                        }
+                        await self.learning_memory.save_pattern(pattern)
+                        log.info(f"💡 Detected new listing on {name}: {sym}")
+                    except Exception:
+                        continue
+        except Exception as e:
+            log.error(f"Error discovering listing events: {e}")
+
+    async def _discover_weekend_patterns(self):
+        """Look for weekend vs weekday behavior differences for majors."""
+        log.debug("📅 Discovering weekend patterns...")
+        try:
+            majors = ['BTC/USD','ETH/USD','BTC/USDC','ETH/USDC']
+            for name, ex in self.exchanges.items():
+                try:
+                    await ex.load_markets()
+                except Exception:
+                    pass
+                for sym in majors:
+                    try:
+                        ohlcv = await ex.fetch_ohlcv(sym, '1h', limit=24*30)
+                        if not ohlcv or len(ohlcv) < 24*14:
+                            continue
+                        import pandas as _pd
+                        df = _pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+                        df['ts'] = _pd.to_datetime(df['timestamp'], unit='ms')
+                        df['dow'] = df['ts'].dt.dayofweek
+                        df['ret'] = df['close'].pct_change()
+                        weekend = df[df['dow'].isin([5,6])]['ret']
+                        weekday = df[~df['dow'].isin([5,6])]['ret']
+                        if len(weekend) > 24 and len(weekday) > 24:
+                            import numpy as _np
+                            mu_wknd = float(_np.nanmean(weekend))
+                            mu_wkdy = float(_np.nanmean(weekday))
+                            edge = mu_wknd - mu_wkdy
+                            if abs(edge) > 0.0008:  # ~0.08%
+                                pattern = {
+                                    'type': 'weekend_edge',
+                                    'symbol': sym,
+                                    'exchange': name,
+                                    'avg_return': float(edge),
+                                    'win_rate': 0.55,
+                                    'sample_size': int(len(weekend)+len(weekday)),
+                                    'description': f"Weekend vs weekday avg return diff {edge:+.2%} on {sym} ({name})",
+                                    'confidence': min(0.9, abs(edge)*800)
+                                }
+                                await self.learning_memory.save_pattern(pattern)
+                                log.info(f"💡 Discovered weekend pattern: {pattern['description']}")
+                    except Exception:
+                        continue
+        except Exception as e:
+            log.error(f"Error discovering weekend patterns: {e}")
 
     async def _find_mean_reversion(self, df: pd.DataFrame, symbol: str, exchange: str):
         """Find mean reversion opportunities when price deviates from moving averages"""
@@ -1805,6 +2201,33 @@ class AdaptiveStrategyEngine:
                     log.warning(f"Invalid code generated for pattern {pattern.get('id', 'unknown')}")
                     continue
                 
+                # Backtest gate before adding to PAPER
+                try:
+                    metrics = await quick_backtest(
+                        generated_code,
+                        symbol=pattern.get('symbol', 'ETH/USDT') or 'ETH/USDT',
+                        timeframe='5m',
+                        limit=200
+                    )
+                except Exception as e:
+                    log.error(f"Backtest failed: {e}")
+                    metrics = {'pnl': 0.0, 'sharpe_like': 0.0, 'win_rate': 0.0, 'trades': 0}
+
+                # Phase-based thresholds
+                if phase == "Discovery":
+                    min_pnl, min_sharpe, min_wr = 0.0, 0.3, 0.52
+                elif phase == "Optimization":
+                    min_pnl, min_sharpe, min_wr = 5.0, 0.8, 0.55
+                else:
+                    min_pnl, min_sharpe, min_wr = 10.0, 1.0, 0.58
+
+                if not (metrics.get('sharpe_like', 0) >= min_sharpe and metrics.get('win_rate', 0) >= min_wr):
+                    log.info(
+                        f"🧪 Rejected strategy (pre-gate) PnL={metrics.get('pnl',0):.2f}, "
+                        f"Sharpe~={metrics.get('sharpe_like',0):.2f}, WR={metrics.get('win_rate',0):.1%}"
+                    )
+                    continue
+
                 # Create new strategy
                 new_strategy = Strategy(
                     id=hashlib.sha256(strategy_name.encode()).hexdigest()[:16],
@@ -2510,68 +2933,149 @@ class AutonomousTrader:
         opportunities = []
         total_tickers = 0
         filtered_count = 0
-        
-        for exchange_name, exchange in self.exchanges.items():
+
+        async def _fetch_tickers_safe(exchange_name: str, exchange) -> Dict[str, Any]:
+            """Fetch tickers with robust fallback for exchanges that error on bulk calls (e.g., coinbase)."""
             try:
-                # Get current tickers
-                log.info(f"🔍 Scanning {exchange_name} for opportunities...")
-                tickers = await exchange.fetch_tickers()
-                total_tickers += len(tickers)
-                log.info(f"📊 Found {len(tickers)} tickers on {exchange_name}")
-                
-                # Filter and rank opportunities
-                exchange_filtered = 0
-                for symbol, ticker in tickers.items():
-                    if not is_sane_ticker(symbol):
-                        continue
-                    
-                    # DEFENSIVE VOLUME CALCULATION - works for both Kraken and Coinbase
-                    volume_usd = (ticker.get('quoteVolume')  # Standard path (Coinbase)
-                                 or (ticker.get('baseVolume', 0) * ticker.get('vwap', ticker.get('last', 0))))  # Kraken path
-                    
-                    # DEFENSIVE PERCENTAGE CALCULATION
-                    change_pct = ticker.get('percentage')
-                    if change_pct is None and ticker.get('open') and ticker.get('last'):
-                        # Calculate manually for Kraken
-                        change_pct = ((ticker['last'] - ticker['open']) / ticker['open'] * 100) if ticker['open'] > 0 else 0
-                    change_pct_abs = abs(change_pct or 0)
-                    
-                    # Log anomalies for debugging
-                    if exchange_filtered < 5 and (not ticker.get('vwap') or not ticker.get('open')):
-                        log.debug(f"⚠️ {exchange_name} {symbol}: missing vwap={ticker.get('vwap')} or open={ticker.get('open')}")
-                    
-                    # RELAXED FILTERS for more opportunities
-                    if volume_usd > 5000 and change_pct_abs > 0.5:  # $5k volume, 0.5% change
-                        exchange_filtered += 1
-                        opportunities.append({
-                            'symbol': symbol,
-                            'exchange': exchange_name,
-                            'price': ticker.get('last', 0),
-                            'volume': volume_usd,
-                            'change_24h': change_pct or 0,  # Keep signed value for direction
-                            'bid': ticker.get('bid', 0),
-                            'ask': ticker.get('ask', 0),
-                            'spread': (ticker.get('ask', 0) - ticker.get('bid', 0)) / ticker.get('last', 1) if ticker.get('last') else 0,
-                            'timestamp': datetime.utcnow(),
-                            # ADD ALL FIELDS THE STRATEGIES NEED:
-                            'current_price': ticker.get('last', 0),
-                            'volume_24h': volume_usd,
-                            'high_24h': ticker.get('high', ticker.get('last', 0)),
-                            'low_24h': ticker.get('low', ticker.get('last', 0)),
-                            'open_24h': ticker.get('open', ticker.get('last', 0)),
-                            'vwap': ticker.get('vwap', ticker.get('last', 0))
-                        })
-                
-                filtered_count += exchange_filtered
-                log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $5k AND change > 0.5%)")
-                
-            except Exception as e:
-                log.error(f"Error scanning {exchange_name}: {e}")
-                log.error(traceback.format_exc())
+                # Ensure markets are loaded; some exchanges require this to stabilize parsing
+                try:
+                    await exchange.load_markets()
+                except Exception:
+                    pass
+                return await exchange.fetch_tickers()
+            except Exception as primary_error:
+                log.warning(f"{exchange_name} fetch_tickers failed ({primary_error}); falling back to per-symbol fetch")
+                try:
+                    try:
+                        markets = await exchange.fetch_markets()
+                        candidate_symbols = [m.get('symbol') for m in markets if m.get('active') and isinstance(m.get('symbol'), str) and '/' in m.get('symbol','')]
+                    except Exception:
+                        # As a last resort, use any known symbols from the exchange instance
+                        candidate_symbols = [s for s in getattr(exchange, 'symbols', []) if isinstance(s, str) and '/' in s]
+                    candidate_symbols = candidate_symbols[:100]
+                    tickers: Dict[str, Any] = {}
+                    for sym in candidate_symbols:
+                        try:
+                            tickers[sym] = await exchange.fetch_ticker(sym)
+                        except Exception:
+                            continue
+                    return tickers
+                except Exception as fallback_error:
+                    log.error(f"{exchange_name} fallback markets/tickers failed: {fallback_error}")
+                    return {}
         
+        # Fetch tickers in parallel for all exchanges
+        async def fetch_exchange_tickers(name, ex):
+            log.info(f"🔍 Scanning {name} for opportunities...")
+            data = await _fetch_tickers_safe(name, ex)
+            if data:
+                return name, data, None
+            return name, None, RuntimeError("no tickers")
+
+        tasks = [fetch_exchange_tickers(name, ex) for name, ex in self.exchanges.items()]
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+
+        for exchange_name, tickers, err in results:
+            if err is not None or not tickers:
+                log.error(f"Error scanning {exchange_name}: {err or 'no tickers'}")
+                continue
+            total_tickers += len(tickers)
+            log.info(f"📊 Found {len(tickers)} tickers on {exchange_name}")
+
+            exchange_filtered = 0
+            for symbol, ticker in tickers.items():
+                if not is_sane_ticker(symbol):
+                    continue
+                # Quote currency filter
+                try:
+                    quote = symbol.split('/')[-1]
+                except Exception:
+                    quote = ''
+                if quote not in Config.ALLOWED_QUOTES:
+                    continue
+                # Coerce numeric fields safely
+                def _to_float(value, default=0.0):
+                    try:
+                        return float(value)
+                    except (TypeError, ValueError):
+                        return default
+
+                vwap = ticker.get('vwap')
+                if vwap is None:
+                    vwap = ticker.get('last') if ticker.get('last') is not None else ticker.get('close')
+                vwap = _to_float(vwap, 0.0)
+
+                base_volume = _to_float(ticker.get('baseVolume'), 0.0)
+                quote_volume = ticker.get('quoteVolume')
+                volume_usd = _to_float(quote_volume, None)
+                if volume_usd is None:
+                    volume_usd = base_volume * vwap
+
+                change_pct = ticker.get('percentage')
+                if change_pct is None:
+                    open_price = ticker.get('open') if ticker.get('open') is not None else ticker.get('previousClose')
+                    last_price = ticker.get('last') if ticker.get('last') is not None else ticker.get('close')
+                    open_price = _to_float(open_price, 0.0)
+                    last_price = _to_float(last_price, 0.0)
+                    if open_price > 0 and last_price > 0:
+                        change_pct = (last_price - open_price) / open_price * 100.0
+                change_pct = _to_float(change_pct, 0.0)
+                change_pct_abs = abs(change_pct or 0)
+
+                if exchange_filtered < 5 and (not ticker.get('vwap') or not ticker.get('open')):
+                    log.debug(f"⚠️ {exchange_name} {symbol}: missing vwap={ticker.get('vwap')} or open={ticker.get('open')}")
+
+                # Mode-specific volume floor
+                if self.state.mode == TradingMode.PAPER:
+                    min_vol = Config.MIN_VOLUME_USD_PAPER
+                elif self.state.mode == TradingMode.MICRO:
+                    min_vol = Config.MIN_VOLUME_USD_MICRO
+                else:
+                    min_vol = Config.MIN_VOLUME_USD_ACTIVE
+
+                # Spread constraint
+                bid = _to_float(ticker.get('bid'), 0.0)
+                ask = _to_float(ticker.get('ask'), 0.0)
+                last_px = _to_float(ticker.get('last'), 0.0)
+                spread_bps = ((ask - bid) / last_px * 10000.0) if last_px > 0 and ask > 0 and bid > 0 else 99999
+
+                # Optional orderbook depth on exchanges that support it
+                depth_ok = True
+                if Config.CHECK_ORDERBOOK_DEPTH and exchange_name in self.exchanges and getattr(self.exchanges[exchange_name], 'has', {}).get('fetchOrderBook'):
+                    try:
+                        ob = await self.exchanges[exchange_name].fetch_order_book(symbol, limit=5)
+                        top5_bid_usd = sum([(b[0]*b[1]) for b in (ob.get('bids') or [])[:5]])
+                        top5_ask_usd = sum([(a[0]*a[1]) for a in (ob.get('asks') or [])[:5]])
+                        depth_ok = (top5_bid_usd >= Config.MIN_OB_DEPTH_USD and top5_ask_usd >= Config.MIN_OB_DEPTH_USD)
+                    except Exception:
+                        depth_ok = True
+
+                if _to_float(volume_usd, 0.0) >= min_vol and change_pct_abs > 0.5 and spread_bps <= Config.MAX_SPREAD_BPS and depth_ok:
+                    exchange_filtered += 1
+                    opportunities.append({
+                        'symbol': symbol,
+                        'exchange': exchange_name,
+                        'price': _to_float(ticker.get('last'), 0.0),
+                        'volume': _to_float(volume_usd, 0.0),
+                        'change_24h': _to_float(change_pct, 0.0),
+                        'bid': _to_float(ticker.get('bid'), 0.0),
+                        'ask': _to_float(ticker.get('ask'), 0.0),
+                        'spread': ((_to_float(ticker.get('ask'), 0.0) - _to_float(ticker.get('bid'), 0.0)) / _to_float(ticker.get('last'), 1.0)) if _to_float(ticker.get('last'), 0.0) > 0 else 0.0,
+                        'timestamp': datetime.utcnow(),
+                        'current_price': _to_float(ticker.get('last'), 0.0),
+                        'volume_24h': _to_float(volume_usd, 0.0),
+                        'high_24h': _to_float(ticker.get('high', ticker.get('last')), 0.0),
+                        'low_24h': _to_float(ticker.get('low', ticker.get('last')), 0.0),
+                        'open_24h': _to_float(ticker.get('open', ticker.get('last')), 0.0),
+                        'vwap': _to_float(ticker.get('vwap', ticker.get('last')), 0.0)
+                    })
+
+            filtered_count += exchange_filtered
+            log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $5k AND change > 0.5%)")
+
         # Sort by opportunity score (volume * volatility)
         opportunities.sort(
-            key=lambda x: x['volume'] * abs(x['change_24h']),
+            key=lambda x: float(x.get('volume', 0.0)) * abs(float(x.get('change_24h', 0.0))),
             reverse=True
         )
         
@@ -2663,7 +3167,6 @@ class AutonomousTrader:
                     'ZeroDivisionError': ZeroDivisionError,
                     'AttributeError': AttributeError,
                     'IndexError': IndexError,
-                    '__import__': __import__,
                     # ADD THESE MISSING BUILTINS
                     'print': lambda *args, **kwargs: None,  # No-op print for strategies
                     '__name__': '__main__',  # Fake module name
@@ -2704,6 +3207,12 @@ class AutonomousTrader:
                 'detect_psychological_level_proximity': _detect_psychological_level_proximity
             }
             
+            # Reject obvious symbol-specific strategies to enforce agnosticism
+            illegal_patterns = ["opp['symbol'] ==", '== \"', '==\"', 'SWELL/USDC', 'PROVE/USDC']
+            lowered_code = strategy.code
+            if any(p in lowered_code for p in illegal_patterns):
+                return {'action': 'hold', 'conf': 0.0, 'reason': 'Symbol-specific logic rejected'}
+
             # Execute the strategy code
             exec(strategy.code, exec_globals)
             
@@ -2757,6 +3266,8 @@ class AutonomousTrader:
         action = decision.get('action')
         confidence = decision.get('conf', 0.5)
         reason = decision.get('reason', 'No reason provided')
+        decision_sl = decision.get('sl')
+        decision_tp = decision.get('tp')
         
         # AGGRESSIVE confidence thresholds for moonshot goal
         if strategy.status == StrategyStatus.PAPER:
@@ -2764,7 +3275,7 @@ class AutonomousTrader:
             position_size = 100  # Simulated $100
         elif strategy.status == StrategyStatus.MICRO:
             min_confidence = 0.30  # Still aggressive
-            position_size = min(100, self.state.equity * 0.05)  # 5% positions
+            position_size = min(100, self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct))
         else:  # ACTIVE
             min_confidence = 0.40  # Aggressive for proven strategies
             # Use larger position sizes for moonshot
@@ -2773,11 +3284,17 @@ class AutonomousTrader:
                     strategy.win_rate,
                     strategy.avg_profit,
                     abs(strategy.avg_profit * (1 - strategy.win_rate) / strategy.win_rate) if strategy.win_rate > 0 else 0.05,
-                    kelly_fraction=0.5  # More aggressive Kelly fraction
+                    max_position_pct=min(Config.MAX_POSITION_SIZE, strategy.max_position_pct),
+                    kelly_fraction=min(0.5, Config.KELLY_FRACTION)  # never exceed configured
                 )
-                position_size = self.state.equity * kelly_size * strategy.position_multiplier
+                position_multiplier = 1.0
+                try:
+                    position_multiplier = float(getattr(strategy, 'position_multiplier', 1.0) or 1.0)
+                except Exception:
+                    position_multiplier = 1.0
+                position_size = self.state.equity * kelly_size * position_multiplier
             else:
-                position_size = self.state.equity * 0.08  # Default 8% for aggressive growth
+                position_size = self.state.equity * min(0.08, Config.MAX_POSITION_SIZE)
         
         log.info(f"💭 {strategy.name}: {action} {opp['symbol']} conf={confidence:.2f} (min={min_confidence:.2f})")
         
@@ -2799,7 +3316,9 @@ class AutonomousTrader:
                 opp,
                 'buy',
                 position_size,
-                reason
+                reason,
+                decision_sl,
+                decision_tp
             )
         elif action == 'sell' and not existing_position:
             # Short selling (if supported)
@@ -2811,18 +3330,38 @@ class AutonomousTrader:
                     opp,
                     'sell',
                     position_size,
-                    reason
+                    reason,
+                    decision_sl,
+                    decision_tp
                 )
         elif action in ['close', 'exit'] and existing_position:
             await self._close_position(existing_position, reason)
 
-    async def _open_position(self, strategy: Strategy, opp: Dict, side: str, size: float, reason: str):
+    async def _open_position(self, strategy: Strategy, opp: Dict, side: str, size: float, reason: str, sl: Optional[float] = None, tp: Optional[float] = None):
         """Open a new trading position."""
         
         # Risk checks
         if len(self.state.positions) >= 20:  # Max 20 concurrent positions
             log.debug("Maximum positions reached")
             return
+
+        # Simple correlation/overlap controls
+        try:
+            base, quote = opp['symbol'].split('/')
+        except Exception:
+            base, quote = opp['symbol'], ''
+        same_quote = [p for p in self.state.positions.values() if p.symbol.endswith(f"/{quote}")] if quote else []
+        same_base = [p for p in self.state.positions.values() if p.symbol.startswith(f"{base}/")] if base else []
+        if len(same_quote) >= 5:
+            log.debug("Correlation cap: too many positions in same quote")
+            return
+        if len(same_base) >= 3:
+            log.debug("Correlation cap: too many positions in same base")
+            return
+        
+        # Enforce caps and cash
+        max_cap = self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct)
+        size = min(size, max_cap, self.state.cash)
         
         if size < Config.MIN_TRADE_SIZE:
             log.debug(f"Position size ${size:.2f} below minimum")
@@ -2838,8 +3377,12 @@ class AutonomousTrader:
             amount=size / opp['price'] if opp['price'] > 0 else 0,
             entry_price=opp['price'],
             current_price=opp['price'],
-            stop_loss=opp['price'] * (1 - strategy.stop_loss) if side == 'buy' else opp['price'] * (1 + strategy.stop_loss),
-            take_profit=opp['price'] * (1 + strategy.take_profit) if side == 'buy' else opp['price'] * (1 - strategy.take_profit)
+            stop_loss=(sl if isinstance(sl, (int, float)) and sl > 0 else (
+                opp['price'] * (1 - strategy.stop_loss) if side == 'buy' else opp['price'] * (1 + strategy.stop_loss)
+            )),
+            take_profit=(tp if isinstance(tp, (int, float)) and tp > 0 else (
+                opp['price'] * (1 + strategy.take_profit) if side == 'buy' else opp['price'] * (1 - strategy.take_profit)
+            )),
         )
         
         # Execute trade (paper or real)
@@ -2873,7 +3416,8 @@ class AutonomousTrader:
         
         # Add position to state
         self.state.positions[position.id] = position
-        self.state.cash -= size
+        # Deduct notional plus estimated fees
+        self.state.cash -= size * (1.0 + Config.FEE_RATE)
         
         # Update strategy metrics
         strategy.total_trades += 1
@@ -2901,6 +3445,12 @@ class AutonomousTrader:
             pnl = (position.entry_price - exit_price) * position.amount
             pnl_pct = (position.entry_price - exit_price) / position.entry_price
         
+        # Estimated fees (open + close)
+        open_notional = position.entry_price * position.amount
+        close_notional = exit_price * position.amount
+        fee_cost = (open_notional + close_notional) * Config.FEE_RATE
+        pnl_after_fees = pnl - fee_cost
+        
         # Execute close (paper or real)
         if self.state.mode != TradingMode.PAPER:
             try:
@@ -2925,15 +3475,16 @@ class AutonomousTrader:
                 return
         
         # Update state
-        self.state.cash += position.amount * exit_price
-        self.state.daily_pnl += pnl
-        self.state.total_pnl += pnl
+        # Add proceeds minus estimated close fee (open fee was deducted on open)
+        self.state.cash += close_notional * (1.0 - Config.FEE_RATE)
+        self.state.daily_pnl += pnl_after_fees
+        self.state.total_pnl += pnl_after_fees
         
         # Update strategy metrics
         strategy = self.state.strategies.get(position.strategy_id)
         if strategy:
-            strategy.total_pnl += pnl
-            if pnl > 0:
+            strategy.total_pnl += pnl_after_fees
+            if pnl_after_fees > 0:
                 strategy.winning_trades += 1
             
             # Update win rate
@@ -2945,7 +3496,7 @@ class AutonomousTrader:
                 'side': position.side,
                 'entry': position.entry_price,
                 'exit': exit_price,
-                'pnl': pnl,
+                'pnl': pnl_after_fees,
                 'pnl_pct': pnl_pct,
                 'opened': position.opened_at.isoformat(),
                 'closed': datetime.utcnow().isoformat()
@@ -2976,14 +3527,14 @@ class AutonomousTrader:
             await self.db.save_strategy(strategy)
         
         # Log the close
-        emoji = "💚" if pnl > 0 else "💔"
-        log.info(f"{emoji} Closed {position.symbol}: {pnl:+.2f} ({pnl_pct:+.1%}) - {reason}")
+        emoji = "💚" if pnl_after_fees > 0 else "💔"
+        log.info(f"{emoji} Closed {position.symbol}: {pnl_after_fees:+.2f} ({pnl_pct:+.1%}) - {reason}")
         
         # Notify if significant
-        if abs(pnl) > 10 and self.notifier:
+        if abs(pnl_after_fees) > 10 and self.notifier:
             await self.notifier.send_alert(
                 f"{emoji} Position closed:\n"
-                f"{position.symbol}: ${pnl:+.2f} ({pnl_pct:+.1%})\n"
+                f"{position.symbol}: ${pnl_after_fees:+.2f} ({pnl_pct:+.1%})\n"
                 f"Reason: {reason}"
             )
         
@@ -2996,7 +3547,7 @@ class AutonomousTrader:
             'side': position.side,
             'amount': position.amount,
             'price': position.entry_price,
-            'pnl': pnl,
+            'pnl': pnl_after_fees,
             'pnl_pct': pnl_pct,
             'opened_at': position.opened_at.isoformat(),
             'closed_at': datetime.utcnow().isoformat()
@@ -3059,23 +3610,24 @@ class AutonomousTrader:
         total_wins = sum([s.winning_trades for s in self.state.strategies.values()])
         self.state.win_rate = total_wins / total_trades if total_trades > 0 else 0
         
-        # Reset daily P&L at midnight UTC
+        # Reset daily P&L at midnight UTC and set baseline equity
         if datetime.utcnow().hour == 0 and datetime.utcnow().minute < 1:
             self.state.daily_pnl = 0
             self.state.trades_today = 0
+            self.state.equity_start_of_day = self.state.equity
         
         self.state.last_update = datetime.utcnow()
         
-        # Save state for dashboard (every 30 seconds for real-time updates)
-        if int(time.time()) % 30 == 0:
+        # Save state for dashboard (every ~30 seconds for real-time updates)
+        now_ts = time.time()
+        if not hasattr(self, '_last_state_save_ts'):
+            self._last_state_save_ts = 0.0
+        if (now_ts - self._last_state_save_ts) >= 30.0:
             await self.db.save_state(self.state)
             
             # Also save current positions for dashboard
             await self._save_positions_to_db()
-        
-        # Full save every 5 minutes
-        elif self.state.last_update.minute % 5 == 0:
-            await self.db.save_state(self.state)
+            self._last_state_save_ts = now_ts
 
     async def _save_positions_to_db(self):
         """Save current positions to database for dashboard display"""
@@ -3102,13 +3654,27 @@ class AutonomousTrader:
     async def _check_risk_limits(self) -> bool:
         """Check if risk limits have been exceeded."""
         
-        # Daily loss limit
-        if self.state.daily_pnl < -self.state.equity * Config.MAX_DAILY_LOSS:
+        # Resolve config value (support legacy tests that set trader.config)
+        try:
+            max_daily_loss_cfg = float(getattr(self, 'config', {}).get('MAX_DAILY_LOSS', Config.MAX_DAILY_LOSS))
+        except Exception:
+            max_daily_loss_cfg = Config.MAX_DAILY_LOSS
+
+        # Daily loss limit based on start-of-day equity (new behavior)
+        if self.state.equity <= 0:
+            return True
+        baseline = max(self.state.equity_start_of_day, 1e-9)
+        daily_drawdown = (self.state.equity - baseline) / baseline
+        if daily_drawdown <= -max_daily_loss_cfg:
             log.warning(f"⚠️ Daily loss limit hit: ${self.state.daily_pnl:.2f}")
             return True
         
+        # Legacy behavior: also trip if daily_pnl breaches threshold vs current equity
+        if self.state.daily_pnl < -self.state.equity * max_daily_loss_cfg:
+            log.warning(f"⚠️ Daily loss (legacy) limit hit: ${self.state.daily_pnl:.2f}")
+            return True
+        
         # Maximum drawdown
-        peak_equity = Config.INITIAL_CAPITAL + self.state.total_pnl
         if self.state.total_pnl < 0:
             current_drawdown = abs(self.state.total_pnl) / Config.INITIAL_CAPITAL
         else:
@@ -3253,9 +3819,17 @@ class AutonomousTrader:
 async def main():
     """Main entry point for the autonomous trading system."""
     
+    # Parse CLI args
+    import argparse
+    parser = argparse.ArgumentParser(description="v26meme Autonomous Trading System")
+    parser.add_argument("--mode", choices=["PAPER", "MICRO", "ACTIVE"], default=os.getenv('TRADING_MODE', os.getenv('MODE', 'PAPER')).upper(), help="Operating mode")
+    parser.add_argument("--install", action="store_true", help="Run one-time setup")
+    # Don't fail under pytest/unrecognized args
+    args, _unknown = parser.parse_known_args()
+
     # Setup logging with more detail
     logging.basicConfig(
-        level=logging.INFO,
+        level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
         format='%(asctime)s [%(levelname)s] %(message)s',
         handlers=[
             logging.FileHandler(f"v26meme_full.log"),
@@ -3276,6 +3850,10 @@ async def main():
         if not success:
             log.error("Failed to initialize system")
             return
+        
+        # Apply mode from CLI/env
+        mode_map = {"PAPER": TradingMode.PAPER, "MICRO": TradingMode.MICRO, "ACTIVE": TradingMode.ACTIVE}
+        trader.state.mode = mode_map.get(args.mode.upper(), TradingMode.PAPER)
         
         # Run the system
         await trader.run()

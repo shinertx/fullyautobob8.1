@@ -124,12 +124,12 @@ cp .env.example .env
 # Edit .env:
 OPENAI_API_KEY=sk-...  # REQUIRED for strategy generation
 COINBASE_API_KEY=...   # At least one exchange
-MODE=PAPER             # Test for 24h then go REAL
+MODE=PAPER             # Test for 24h then go ACTIVE
 ```
 
 ### 3. Launch the Beast
 ```bash
-python3 v26meme_full.py  # Starts discovering patterns immediately
+python3 v26meme_full.py --mode PAPER  # Starts discovering patterns immediately
 ```
 
 ### 4. Monitor Explosive Growth
@@ -140,7 +140,7 @@ python3 v26meme_full.py  # Starts discovering patterns immediately
 ### 5. Go Live After 24-48 Hours
 ```bash
 # After seeing consistent paper profits
-python3 v26meme_full.py REAL  # Unleash on real markets
+python3 v26meme_full.py --mode ACTIVE  # Unleash on real markets
 ```
 
 ## 📈 Expected Trajectory (90 Days)
@@ -193,9 +193,17 @@ The bot doesn't stop at $1M. With proven strategies:
 **Ready to build wealth at AI speed?**
 
 ```bash
-python3 v26meme_full.py
+python3 v26meme_full.py --mode PAPER
 ```
 
 *90 days. $200 to $1M. Fully autonomous. No human intervention required.*
+
+## 🔧 Environment Variables (Overrides)
+
+- `INITIAL_CAPITAL`, `TARGET_CAPITAL`, `TARGET_DAYS`
+- `MAX_POSITION_PCT`, `MAX_DAILY_DRAWDOWN`, `MAX_DRAWDOWN`, `FRACTIONAL_KELLY_CAP`
+- `MIN_ORDER_NOTIONAL`, `STOP_LOSS_PCT`, `TAKE_PROFIT_PCT`, `FEE_RATE`
+- `MODE` (PAPER|MICRO|ACTIVE), `LOG_LEVEL`
+- Feature flags: `FEED_LISTING`, `FEED_TWITTER`, `FEED_WHALE`, `FEED_WEEKEND`, `GENETIC_V2`, `RISK_GUARDIAN`
 
 **The future of trading is here. It thinks faster, trades better, and never sleeps.**

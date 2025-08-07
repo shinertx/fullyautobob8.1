@@ -14,3 +14,5 @@ scipy
 ccxt
 openai
 nest_asyncio
+aiohttp
+rich
