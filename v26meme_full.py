@@ -398,6 +398,26 @@ class Database:
         ''')
         
         self.conn.commit()
+        
+        # Create current_positions table for dashboard
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS current_positions (
+                id TEXT PRIMARY KEY,
+                strategy_id TEXT,
+                symbol TEXT,
+                exchange TEXT,
+                side TEXT,
+                amount REAL,
+                entry_price REAL,
+                current_price REAL,
+                pnl REAL,
+                pnl_pct REAL,
+                opened_at TEXT,
+                stop_loss REAL,
+                take_profit REAL
+            )
+        ''')
+        self.conn.commit()
 
     async def save_pattern(self, pattern: Pattern):
         """Save a discovered pattern to database."""
@@ -1819,55 +1839,83 @@ class AdaptiveStrategyEngine:
             pattern_details.append(f"Behavior: {pattern.get('behavior', 'resistance')}")
             pattern_details.append(f"Historical rejection rate: {pattern.get('rejection_rate', 0.7):.1%}")
             
-            entry_logic.append(f"abs(opp['price'] - {level}) / {level} < 0.005  # Within 0.5% of level")
-            entry_logic.append(f"# Entry when price approaches ${level}")
+            entry_logic.append(f"# Check if current price is near psychological level (adaptable)")
+            entry_logic.append(f"current_price = safe_get(opp, 'current_price', 0)")
+            entry_logic.append(f"# Look for psychological levels based on price (0.99, 9.99, 99.99 patterns)")
+            entry_logic.append(f"psychological_proximity = detect_psychological_level_proximity(current_price)")
             
             if pattern.get('behavior') == 'resistance':
-                entry_logic.append(f"opp['price'] < {level} * 0.995  # Below resistance")
-                exit_logic.append(f"price >= {level} * 0.98  # Bounce from resistance")
+                entry_logic.append(f"# Entry logic for resistance levels")
+                exit_logic.append(f"# Exit when bounce confirmed")
             else:
-                entry_logic.append(f"opp['price'] > {level} * 1.005  # Above support")
-                exit_logic.append(f"price <= {level} * 1.02  # Bounce from support")
+                entry_logic.append(f"# Entry logic for support levels") 
+                exit_logic.append(f"# Exit when bounce confirmed")
             
             risk_params['stop_loss'] = 0.01  # 1% stop
             risk_params['take_profit'] = pattern.get('avg_bounce', 0.02)
             
         elif pattern['type'] == 'volume_spike_momentum':
-            pattern_details.append(f"Volume Z-score threshold: {pattern['avg_zscore']:.1f}")
-            pattern_details.append(f"Expected move: {pattern['avg_subsequent_return']:.1%}")
-            pattern_details.append(f"Direction: {pattern['direction']}")
+            pattern_details.append(f"Volume Z-score threshold: {pattern.get('avg_zscore', 3.0):.1f}")
+            pattern_details.append(f"Expected move: {pattern.get('avg_subsequent_return', 0.03):.1%}")
+            pattern_details.append(f"Direction: {pattern.get('direction', 'bullish')}")
             pattern_details.append(f"Optimal hold: {pattern.get('optimal_hold_periods', 4)} periods")
             
-            entry_logic.append(f"# Detect volume spike (would need volume data in real implementation)")
-            entry_logic.append(f"volume_spike = True  # Placeholder - check if volume > 3 sigma")
-            entry_logic.append(f"momentum_direction = '{pattern['direction']}'")
+            entry_logic.append(f"# Detect volume anomalies in current symbol")
+            entry_logic.append(f"volume_24h = safe_get(opp, 'volume_24h', 0)")
+            entry_logic.append(f"change_24h = safe_get(opp, 'change_24h', 0)")
+            entry_logic.append(f"# Look for volume spikes with momentum")
+            entry_logic.append(f"volume_momentum_signal = abs(change_24h) > 0.05 and volume_24h > 50000")
             
             risk_params['stop_loss'] = 0.02
-            risk_params['take_profit'] = abs(pattern['avg_subsequent_return'])
+            risk_params['take_profit'] = abs(pattern.get('avg_subsequent_return', 0.03))
             
         elif pattern['type'] == 'time_of_day':
-            hour = pattern['hour_utc']
+            hour = pattern.get('hour_utc', 14)
             pattern_details.append(f"Entry hour: {hour}:00 UTC")
-            pattern_details.append(f"Historical return: {pattern['avg_return']:.2%}")
+            pattern_details.append(f"Historical return: {pattern.get('avg_return', 0.02):.2%}")
             pattern_details.append(f"Sharpe ratio: {pattern.get('sharpe_ratio', 1.0):.2f}")
             
+            entry_logic.append(f"# Time-based pattern - works for any symbol")
             entry_logic.append(f"from datetime import datetime")
             entry_logic.append(f"current_hour = datetime.utcnow().hour")
             entry_logic.append(f"time_match = current_hour == {hour}")
+            entry_logic.append(f"# Additional filters for any symbol")
+            entry_logic.append(f"volume_filter = safe_get(opp, 'volume_24h', 0) > 10000")
             
             risk_params['stop_loss'] = 0.015
-            risk_params['take_profit'] = pattern['avg_return'] * 2
+            risk_params['take_profit'] = pattern.get('avg_return', 0.02) * 2
+            
         elif pattern['type'] == 'mean_reversion':
             pattern_details.append(f"Entry Z-score: {pattern.get('entry_z_score', 2.0):.1f}")
-            pattern_details.append(f"Average profit: {pattern['avg_profit']:.2%}")
+            pattern_details.append(f"Average profit: {pattern.get('avg_return', 0.025):.2%}")
             pattern_details.append(f"Periods to revert: {pattern.get('avg_periods_to_revert', 5):.0f}")
             
-            entry_logic.append(f"# Calculate Bollinger Bands z-score")
-            entry_logic.append(f"z_score_threshold = {pattern.get('entry_z_score', 2.0)}")
-            entry_logic.append(f"# Entry when price deviates {pattern.get('entry_z_score', 2.0)} sigma from mean")
+            entry_logic.append(f"# Mean reversion logic - works with any symbol")
+            entry_logic.append(f"current_price = safe_get(opp, 'current_price', 0)")
+            entry_logic.append(f"high_24h = safe_get(opp, 'high_24h', current_price)")
+            entry_logic.append(f"low_24h = safe_get(opp, 'low_24h', current_price)")
+            entry_logic.append(f"# Calculate price position in daily range")
+            entry_logic.append(f"price_position = safe_divide(current_price - low_24h, high_24h - low_24h, 0.5)")
+            entry_logic.append(f"# Look for extreme deviations")
+            entry_logic.append(f"extreme_deviation = price_position > 0.9 or price_position < 0.1")
             
             risk_params['stop_loss'] = 0.03
-            risk_params['take_profit'] = pattern['avg_profit']        # Build the complete prompt
+            risk_params['take_profit'] = pattern.get('avg_return', 0.025)
+            
+        elif pattern['type'] == 'order_book_imbalance':
+            pattern_details.append(f"Imbalance threshold: {pattern.get('imbalance_threshold', 0.7):.1%}")
+            pattern_details.append(f"Expected return: {pattern.get('avg_return', 0.02):.2%}")
+            pattern_details.append(f"Win rate: {pattern.get('win_rate', 0.65):.1%}")
+            
+            entry_logic.append(f"# Order book imbalance - use available market data")
+            entry_logic.append(f"change_24h = safe_get(opp, 'change_24h', 0)")
+            entry_logic.append(f"volume_24h = safe_get(opp, 'volume_24h', 0)")
+            entry_logic.append(f"# Use volume and price movement as proxy for imbalance")
+            entry_logic.append(f"momentum_signal = abs(change_24h) > 0.02 and volume_24h > 25000")
+            entry_logic.append(f"imbalance_detected = momentum_signal and change_24h > 0")
+            
+            risk_params['stop_loss'] = 0.025
+            risk_params['take_profit'] = pattern.get('avg_return', 0.02)        # Build the complete prompt
         prompt = f"""
 Generate a complete async Python trading strategy function based on this discovered pattern:
 
@@ -1879,9 +1927,22 @@ Generate a complete async Python trading strategy function based on this discove
 - The function MUST be named 'execute_strategy'
 - It MUST be async (use 'async def')
 - It MUST return a dict with 'action' and 'conf' keys
+- CRITICAL: Strategy must work with ANY symbol, not just specific ones
+- DO NOT check for specific symbol names - work with any symbol passed in
+
+**CRITICAL SAFETY RULES**:
+1. ALWAYS use safe_divide(a, b, default) instead of a/b
+2. ALWAYS check if data exists: opp.get('key', default_value)
+3. ALWAYS return a dict with 'action' and 'conf' keys
+4. Set conf between 0.0 and 1.0 (not 0 to 100)
+5. Handle ALL exceptions internally
+6. DO NOT hardcode symbol names - make strategy work with any symbol
+
+**Available helper functions**:
+- safe_divide(a, b, default=0) - prevents division by zero
+- safe_get(dict, key, default) - safely gets dict values
 
 **Pattern Type**: {pattern['type']}
-**Symbol**: {pattern.get('symbol', 'Multiple')}
 **Description**: {pattern['description']}
 **Win Rate**: {pattern['win_rate']:.1%}
 **Average Return**: {pattern['avg_return']:.2%}
@@ -1899,18 +1960,18 @@ Generate a complete async function with this signature:
 ```python
 async def execute_strategy(state, opp):
     '''
-    Strategy: {pattern['type']} pattern for {pattern.get('symbol', 'multiple symbols')}
+    Strategy: {pattern['type']} pattern - works with any symbol
     
     Args:
         state: SystemState object with equity, positions, etc.
-        opp: Dict with 'symbol', 'price', 'volume', 'exchange', etc.
+        opp: Dict with 'symbol', 'current_price', 'volume_24h', 'change_24h', 'high_24h', 'low_24h', 'exchange', etc.
     
     Returns:
         Dict with 'action' ('buy'/'sell'/'hold'), 'conf' (0.0-1.0), and optional 'reason'
     '''
 ```
 
-**Entry Conditions to implement**:
+**Entry Conditions to implement** (adapt these for ANY symbol):
 {chr(10).join(f"- {condition}" for condition in entry_logic)}
 
 **Risk Parameters**:
@@ -1918,12 +1979,15 @@ async def execute_strategy(state, opp):
 - Take Profit: {risk_params.get('take_profit', 0.15):.1%}
 
 **Requirements**:
-1. Check if pattern conditions are met
-2. Calculate position size based on Kelly Criterion (capped at {Config.KELLY_FRACTION})
-3. Verify risk limits (max position size, daily loss limits)
-4. Return confidence score based on pattern strength
-5. Include detailed reasoning in return dict
+1. Extract symbol data from opp dict (symbol, current_price, volume_24h, etc.)
+2. Apply pattern logic to current market conditions (works for ANY symbol)
+3. Calculate position size based on Kelly Criterion (capped at {Config.KELLY_FRACTION})
+4. Verify risk limits (max position size, daily loss limits)
+5. Return confidence score based on pattern strength and current conditions
+6. Include detailed reasoning in return dict
 
+**CRITICAL**: Make this strategy work with any crypto symbol (BTC, ETH, altcoins, etc.). 
+The pattern should be symbol-agnostic and work based on price action, volume, time, etc.
 Make the strategy aggressive but intelligent - we need to reach $1M in 90 days from $200.
 """
         
@@ -2355,12 +2419,27 @@ class AutonomousTrader:
         
         while self.running:
             try:
+                loop_start = time.time()
+                
                 # Get market opportunities
                 opportunities = await self._scan_markets()
                 
-                # Execute strategies on opportunities
-                for opp in opportunities:
-                    await self._execute_strategies(opp)
+                if not opportunities:
+                    log.warning("⚠️ No opportunities found in scan")
+                else:
+                    log.info(f"🎯 Processing {len(opportunities)} opportunities")
+                    
+                    # Log top 3 opportunities for visibility
+                    for i, opp in enumerate(opportunities[:3]):
+                        log.info(f"  #{i+1}: {opp['symbol']} - Vol: ${opp['volume']:,.0f}, Change: {opp['change_24h']:.1f}%")
+                    
+                    # Execute strategies on opportunities
+                    strategies_evaluated = 0
+                    for opp in opportunities[:20]:  # Process top 20 to avoid overload
+                        await self._execute_strategies(opp)
+                        strategies_evaluated += 1
+                    
+                    log.info(f"✅ Evaluated {strategies_evaluated} opportunities with strategies")
                 
                 # Manage existing positions
                 await self._manage_positions()
@@ -2373,22 +2452,33 @@ class AutonomousTrader:
                     log.warning("⚠️ Risk limits hit - entering emergency mode")
                     self.state.mode = TradingMode.EMERGENCY
                 
-                await asyncio.sleep(5)  # Main loop frequency
+                loop_time = time.time() - loop_start
+                if loop_time > 5:
+                    log.warning(f"⏱️ Trading loop took {loop_time:.1f}s (target: 5s)")
+                
+                await asyncio.sleep(max(0, 5 - loop_time))  # Maintain 5s frequency
                 
             except Exception as e:
                 log.error(f"Trading loop error: {e}")
+                log.error(traceback.format_exc())
                 await asyncio.sleep(10)
 
     async def _scan_markets(self) -> List[Dict]:
         """Scan all exchanges for trading opportunities."""
         opportunities = []
+        total_tickers = 0
+        filtered_count = 0
         
         for exchange_name, exchange in self.exchanges.items():
             try:
                 # Get current tickers
+                log.info(f"🔍 Scanning {exchange_name} for opportunities...")
                 tickers = await exchange.fetch_tickers()
+                total_tickers += len(tickers)
+                log.info(f"📊 Found {len(tickers)} tickers on {exchange_name}")
                 
                 # Filter and rank opportunities
+                exchange_filtered = 0
                 for symbol, ticker in tickers.items():
                     if not is_sane_ticker(symbol):
                         continue
@@ -2398,6 +2488,7 @@ class AutonomousTrader:
                     change_pct = abs(ticker.get('percentage')) if ticker.get('percentage') is not None else 0
                     
                     if volume_usd > 10000 and change_pct > 1:  # Active markets
+                        exchange_filtered += 1
                         opportunities.append({
                             'symbol': symbol,
                             'exchange': exchange_name,
@@ -2407,8 +2498,16 @@ class AutonomousTrader:
                             'bid': ticker.get('bid', 0),
                             'ask': ticker.get('ask', 0),
                             'spread': (ticker.get('ask', 0) - ticker.get('bid', 0)) / ticker.get('last', 1) if ticker.get('last') else 0,
-                            'timestamp': datetime.utcnow()
+                            'timestamp': datetime.utcnow(),
+                            # ADD THESE FIELDS:
+                            'high_24h': ticker.get('high', ticker.get('last', 0)),
+                            'low_24h': ticker.get('low', ticker.get('last', 0)),
+                            'open_24h': ticker.get('open', ticker.get('last', 0)),
+                            'vwap': ticker.get('vwap', ticker.get('last', 0))
                         })
+                
+                filtered_count += exchange_filtered
+                log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $10k AND change > 1%)")
                 
             except Exception as e:
                 log.error(f"Error scanning {exchange_name}: {e}")
@@ -2418,6 +2517,8 @@ class AutonomousTrader:
             key=lambda x: x['volume'] * abs(x['change_24h']),
             reverse=True
         )
+        
+        log.info(f"📈 Total: {total_tickers} tickers → {filtered_count} filtered → {len(opportunities)} final opportunities")
         
         return opportunities[:100]  # Top 100 opportunities
 
@@ -2439,17 +2540,29 @@ class AutonomousTrader:
             strategies_to_run = [s for s in self.state.strategies.values() 
                                if s.status != StrategyStatus.RETIRED]
         
+        # Log every strategy evaluation for debugging (removed random sampling)
+        if strategies_to_run:
+            log.info(f"🤖 Evaluating {opp['symbol']} (${opp['volume']:,.0f} vol, {opp['change_24h']:.1f}% change) with {len(strategies_to_run)} strategies")
+        
         for strategy in strategies_to_run:
             try:
                 # Execute strategy code dynamically
                 decision = await self._run_strategy_code(strategy, opp)
                 
-                if decision and decision.get('action') != 'hold':
-                    # Process the trading decision
-                    await self._process_decision(strategy, opp, decision)
+                if decision:
+                    # Log ALL decisions including holds for debugging
+                    log.info(f"📊 Strategy {strategy.name} decision: {decision.get('action', 'none')} (conf: {decision.get('conf', 0):.2f})")
+                    
+                    if decision.get('action') != 'hold':
+                        log.info(f"📍 Strategy {strategy.name} signals {decision['action']} on {opp['symbol']} (conf: {decision.get('conf', 0):.2f})")
+                        # Process the trading decision
+                        await self._process_decision(strategy, opp, decision)
+                else:
+                    log.warning(f"⚠️ Strategy {strategy.name} returned None for {opp['symbol']}")
                     
             except Exception as e:
                 log.error(f"Error executing strategy {strategy.name}: {e}")
+                log.error(traceback.format_exc())
                 # Track strategy failures
                 strategy.max_drawdown = max(strategy.max_drawdown, 0.01)  # Penalty for errors
 
@@ -2484,54 +2597,94 @@ class AutonomousTrader:
                 'np': np,  # Provide numpy
                 'pd': pd,  # Provide pandas
                 'datetime': datetime,
+                'timedelta': timedelta,  # ADD THIS
                 'math': math,
                 'random': random,
-                'calculate_kelly_position': calculate_kelly_position
+                'calculate_kelly_position': calculate_kelly_position,
+                # ADD THESE SAFETY FUNCTIONS:
+                'safe_divide': lambda a, b, default=0: a / b if b != 0 else default,
+                'safe_get': lambda d, key, default=0: d.get(key, default) if isinstance(d, dict) else default
             }
             
             # Execute the strategy code
             exec(strategy.code, exec_globals)
             
-            # Call the execute_strategy function
+            # Call the execute_strategy function with better error handling
             if 'execute_strategy' in exec_globals:
-                result = await exec_globals['execute_strategy'](self.state, opp)
-                return result
+                try:
+                    result = await exec_globals['execute_strategy'](self.state, opp)
+                    
+                    # VALIDATE AND FIX RESULT
+                    if not isinstance(result, dict):
+                        log.warning(f"Strategy {strategy.name} returned {type(result)}, not dict")
+                        return {'action': 'hold', 'conf': 0.0, 'reason': 'Invalid return type'}
+                    
+                    # Ensure required keys exist
+                    if 'action' not in result:
+                        result['action'] = 'hold'
+                    if 'conf' not in result or result['conf'] is None:
+                        result['conf'] = 0.0
+                    
+                    # Ensure conf is a valid number
+                    try:
+                        result['conf'] = float(result.get('conf', 0))
+                    except:
+                        result['conf'] = 0.0
+                    
+                    # Clamp confidence to valid range
+                    result['conf'] = max(0.0, min(1.0, result['conf']))
+                    
+                    return result
+                    
+                except ZeroDivisionError as e:
+                    log.warning(f"Division by zero in {strategy.name}: {e}")
+                    return {'action': 'hold', 'conf': 0.0, 'reason': 'Division by zero'}
+                except KeyError as e:
+                    log.warning(f"Missing key in {strategy.name}: {e}")
+                    return {'action': 'hold', 'conf': 0.0, 'reason': f'Missing data: {e}'}
+                except Exception as e:
+                    log.error(f"Strategy execution error in {strategy.name}: {e}")
+                    return {'action': 'hold', 'conf': 0.0, 'reason': str(e)}
             else:
                 log.error(f"Strategy {strategy.name} missing execute_strategy function")
-                return None
+                return {'action': 'hold', 'conf': 0.0, 'reason': 'Missing function'}
                 
         except Exception as e:
-            log.error(f"Strategy execution error in {strategy.name}: {e}")
-            return None
+            log.error(f"Strategy code execution error in {strategy.name}: {e}")
+            return {'action': 'hold', 'conf': 0.0, 'reason': str(e)}
 
     async def _process_decision(self, strategy: Strategy, opp: Dict, decision: Dict):
-        """Process a trading decision from a strategy."""
+        """Process a trading decision from a strategy - AGGRESSIVE for 90-day sprint."""
         
         action = decision.get('action')
         confidence = decision.get('conf', 0.5)
         reason = decision.get('reason', 'No reason provided')
         
-        # Confidence threshold based on strategy status
+        # AGGRESSIVE confidence thresholds for moonshot goal
         if strategy.status == StrategyStatus.PAPER:
-            min_confidence = 0.3  # Low threshold for testing
+            min_confidence = 0.20  # Very low threshold to start testing
             position_size = 100  # Simulated $100
         elif strategy.status == StrategyStatus.MICRO:
-            min_confidence = 0.5
-            position_size = min(50, self.state.equity * 0.01)  # $50 or 1% of equity
+            min_confidence = 0.30  # Still aggressive
+            position_size = min(100, self.state.equity * 0.05)  # 5% positions
         else:  # ACTIVE
-            min_confidence = 0.6
-            # Kelly-based position sizing
-            if strategy.win_rate > 0 and strategy.avg_profit > 0:
+            min_confidence = 0.40  # Aggressive for proven strategies
+            # Use larger position sizes for moonshot
+            if strategy.win_rate > 0.5 and strategy.avg_profit > 0:
                 kelly_size = calculate_kelly_position(
                     strategy.win_rate,
                     strategy.avg_profit,
-                    abs(strategy.avg_profit * (1 - strategy.win_rate) / strategy.win_rate) if strategy.win_rate > 0 else 0.05
+                    abs(strategy.avg_profit * (1 - strategy.win_rate) / strategy.win_rate) if strategy.win_rate > 0 else 0.05,
+                    kelly_fraction=0.5  # More aggressive Kelly fraction
                 )
                 position_size = self.state.equity * kelly_size * strategy.position_multiplier
             else:
-                position_size = self.state.equity * 0.02  # Default 2%
+                position_size = self.state.equity * 0.08  # Default 8% for aggressive growth
+        
+        log.info(f"💭 {strategy.name}: {action} {opp['symbol']} conf={confidence:.2f} (min={min_confidence:.2f})")
         
         if confidence < min_confidence:
+            log.debug(f"❌ Confidence {confidence:.2f} below threshold {min_confidence:.2f}")
             return
         
         # Check if we already have a position in this symbol
@@ -2815,9 +2968,38 @@ class AutonomousTrader:
         
         self.state.last_update = datetime.utcnow()
         
-        # Save state periodically (every 5 minutes)
-        if self.state.last_update.minute % 5 == 0:
+        # Save state for dashboard (every 30 seconds for real-time updates)
+        if int(time.time()) % 30 == 0:
             await self.db.save_state(self.state)
+            
+            # Also save current positions for dashboard
+            await self._save_positions_to_db()
+        
+        # Full save every 5 minutes
+        elif self.state.last_update.minute % 5 == 0:
+            await self.db.save_state(self.state)
+
+    async def _save_positions_to_db(self):
+        """Save current positions to database for dashboard display"""
+        try:
+            # Clear old positions
+            await self.db.execute("DELETE FROM current_positions")
+            
+            # Insert current positions
+            for position in self.state.positions.values():
+                await self.db.execute("""
+                    INSERT INTO current_positions 
+                    (id, strategy_id, symbol, exchange, side, amount, entry_price, 
+                     current_price, pnl, pnl_pct, opened_at, stop_loss, take_profit)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    position.id, position.strategy_id, position.symbol, position.exchange,
+                    position.side, position.amount, position.entry_price, position.current_price,
+                    position.pnl, position.pnl_pct, position.opened_at.isoformat(),
+                    position.stop_loss, position.take_profit
+                ))
+        except Exception as e:
+            log.error(f"Error saving positions to database: {e}")
 
     async def _check_risk_limits(self) -> bool:
         """Check if risk limits have been exceeded."""
