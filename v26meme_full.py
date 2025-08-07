@@ -1016,7 +1016,7 @@ class PatternDiscoveryEngine:
         log.info("🔬 Starting pattern discovery cycle...")
         
         # Run all discovery methods in parallel for speed
-        tasks = [
+            tasks = [
             self._discover_price_action_patterns(),
             self._discover_volume_patterns(),
             self._discover_time_based_patterns(),
@@ -2772,6 +2772,9 @@ class AutonomousTrader:
         self.ai_manager = None
         self.running = False
         self.tasks = []
+        from collections import defaultdict
+        self._sem = defaultdict(lambda: asyncio.Semaphore(6))
+        self._cooldown_until: Optional[datetime] = None
         
     async def initialize(self):
         """Initialize all components of the trading system."""
@@ -2920,7 +2923,7 @@ class AutonomousTrader:
                     
                     # Log top 3 opportunities for visibility
                     for i, opp in enumerate(opportunities[:3]):
-                        log.info(f"  #{i+1}: {opp['symbol']} - Vol: ${opp['volume']:,.0f}, Change: {opp['change_24h']:.1f}%")
+                log.info(f"  #{i+1}: {opp['symbol']} - Vol: ${opp.get('volume_24h_usd', opp.get('volume',0)):,.0f}, Change: {opp.get('change_24h_pct', opp.get('change_24h',0)):.1f}%")
                     
                     # Execute strategies on opportunities
                     strategies_evaluated = 0
@@ -2945,7 +2948,7 @@ class AutonomousTrader:
                 if loop_time > 5:
                     log.warning(f"⏱️ Trading loop took {loop_time:.1f}s (target: 5s)")
                 
-                await asyncio.sleep(max(0, 5 - loop_time))  # Maintain 5s frequency
+                await asyncio.sleep(max(0, 12 - loop_time))  # Maintain ~12s frequency to reduce rate pressure
                 
             except Exception as e:
                 log.error(f"Trading loop error: {e}")
@@ -2991,7 +2994,8 @@ class AutonomousTrader:
         # Fetch tickers in parallel for all exchanges
         async def fetch_exchange_tickers(name, ex):
             log.info(f"🔍 Scanning {name} for opportunities...")
-            data = await _fetch_tickers_safe(name, ex)
+                async with self._sem[name]:
+                    data = await _fetch_tickers_safe(name, ex)
             if data:
                 return name, data, None
             return name, None, RuntimeError("no tickers")
@@ -3067,7 +3071,8 @@ class AutonomousTrader:
                 depth_ok = True
                 if Config.CHECK_ORDERBOOK_DEPTH and exchange_name in self.exchanges and getattr(self.exchanges[exchange_name], 'has', {}).get('fetchOrderBook'):
                     try:
-                        ob = await self.exchanges[exchange_name].fetch_order_book(symbol, limit=5)
+                        async with self._sem[exchange_name]:
+                            ob = await self.exchanges[exchange_name].fetch_order_book(symbol, limit=5)
                         top5_bid_usd = sum([(b[0]*b[1]) for b in (ob.get('bids') or [])[:5]])
                         top5_ask_usd = sum([(a[0]*a[1]) for a in (ob.get('asks') or [])[:5]])
                         depth_ok = (top5_bid_usd >= Config.MIN_OB_DEPTH_USD and top5_ask_usd >= Config.MIN_OB_DEPTH_USD)
@@ -3110,10 +3115,15 @@ class AutonomousTrader:
     async def _execute_strategies(self, opp: Dict):
         """Execute all applicable strategies on a market opportunity."""
         
-        opp['volume_24h'] = opp.get('volume', 0)
-        opp['change_24h'] = opp.get('change_24h', 0)
+        # Compatibility shim for strategies expecting old keys
+        opp['volume_24h'] = opp.get('volume_24h_usd', opp.get('volume', 0))
+        opp['change_24h'] = opp.get('change_24h_pct', opp.get('change_24h', 0))
         opp['high_24h'] = opp.get('high_24h', opp.get('price', 0))
         opp['low_24h'] = opp.get('low_24h', opp.get('price', 0))
+
+        # Skip entries during cooldown window
+        if self._cooldown_until and datetime.utcnow() < self._cooldown_until:
+            return
         
         # Only execute strategies in appropriate modes
         if self.state.mode == TradingMode.EMERGENCY:
@@ -3691,7 +3701,9 @@ class AutonomousTrader:
         baseline = max(self.state.equity_start_of_day, 1e-9)
         daily_drawdown = (self.state.equity - baseline) / baseline
         if daily_drawdown <= -max_daily_loss_cfg:
-            log.warning(f"⚠️ Daily loss limit hit: ${self.state.daily_pnl:.2f}")
+            log.warning(f"⚠️ Daily loss limit hit: ${self.state.daily_pnl:.2f} - entering cooldown")
+            from datetime import timedelta as _td
+            self._cooldown_until = datetime.utcnow() + _td(hours=24)
             return True
         
         # Legacy behavior: also trip if daily_pnl breaches threshold vs current equity
