@@ -2996,8 +2996,8 @@ class AutonomousTrader:
         # Fetch tickers in parallel for all exchanges
         async def fetch_exchange_tickers(name, ex):
             log.info(f"🔍 Scanning {name} for opportunities...")
-                async with self._sem[name]:
-                    data = await _fetch_tickers_safe(name, ex)
+            async with self._sem[name]:
+                data = await _fetch_tickers_safe(name, ex)
             if data:
                 return name, data, None
             return name, None, RuntimeError("no tickers")
