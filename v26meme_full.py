@@ -14,6 +14,9 @@ import random
 import math
 import logging
 import traceback
+import sqlite3
+import re
+import ast
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Union
 from dataclasses import dataclass, field, asdict
@@ -28,6 +31,11 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 from scipy.signal import find_peaks
+# Add stdlib utilities for log management
+import gzip
+import glob
+import shutil
+
 import ccxt.async_support as ccxt
 import aiohttp
 import openai
@@ -161,6 +169,35 @@ class Config:
 
 # ═══════════════════════════════ LOGGING SETUP ═══════════════════════════════
 
+def compress_old_logs():
+    """Compress previous day daily logs (v26meme_YYYYMMDD.log → .gz), keep today.
+    Safe no-op if files already compressed or missing.
+    """
+    try:
+        today = datetime.now().strftime("%Y%m%d")
+        today_file = f"v26meme_{today}.log"
+        for path in glob.glob("v26meme_*.log"):
+            base = os.path.basename(path)
+            if base == today_file or path.endswith(".gz"):
+                continue
+            gz_path = path + ".gz"
+            if os.path.exists(gz_path):
+                # Already compressed
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+                continue
+            try:
+                with open(path, 'rb') as f_in, gzip.open(gz_path, 'wb') as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+                os.remove(path)
+            except Exception as e:
+                # Don't crash logging for compression problems
+                logging.getLogger(__name__).warning(f"Log compression skipped for {path}: {e}")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"Log compression task failed: {e}")
+
 logging.basicConfig(
     level=getattr(logging, Config.LOG_LEVEL),
     format=Config.LOG_FORMAT,
@@ -169,6 +206,11 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+# Compress old logs at startup of module (harmless if none)
+try:
+    compress_old_logs()
+except Exception:
+    pass
 log = logging.getLogger(__name__)
 console = Console()
 
@@ -290,7 +332,7 @@ def calculate_kelly_position(
     avg_win: float,
     avg_loss: float,
     max_position_pct: float = 0.25,
-    kelly_fraction: float = Config.KELLY_FRACTION,
+    kelly_fraction: float = 0.25,
 ) -> float:
     """
     Calculate optimal position size using Kelly Criterion.
@@ -1801,7 +1843,7 @@ class PatternDiscoveryEngine:
                         if not sym or '/' not in sym or not m.get('active') or not is_sane_ticker(sym):
                             continue
                         quote = m.get('quote') or (sym.split('/')[-1] if '/' in sym else '')
-                                                                      if quote not in ('USD','USDC','EUR'):
+                        if quote not in ('USD','USDC','EUR'):
                             continue
                         try:
                             tickers[sym] = await exchange.fetch_ticker(sym)
@@ -2801,6 +2843,9 @@ class AutonomousTrader:
         self._sem = defaultdict(lambda: asyncio.Semaphore(6))
         # Cooldown window when daily loss breached
         self._cooldown_until: Optional[datetime] = None
+        # TTL cache for market data (reduces API calls)
+        self._ticker_cache = {}
+        self._cache_ttl = 5.0  # 5 second cache
         
     async def initialize(self):
         """Initialize all components of the trading system."""
@@ -3053,6 +3098,28 @@ async def execute_strategy(state, opp):
                 log.error(traceback.format_exc())
                 await asyncio.sleep(10)
 
+    async def _fetch_ticker_cached(self, exchange, symbol: str):
+        """Fetch ticker with TTL cache to reduce API calls."""
+        cache_key = f"{exchange.id}_{symbol}"
+        now = time.time()
+        
+        # Check cache
+        if cache_key in self._ticker_cache:
+            cached_time, cached_data = self._ticker_cache[cache_key]
+            if now - cached_time < self._cache_ttl:
+                return cached_data
+        
+        # Fetch fresh data
+        try:
+            ticker = await exchange.fetch_ticker(symbol)
+            self._ticker_cache[cache_key] = (now, ticker)
+            return ticker
+        except Exception as e:
+            # Return cached data if available, even if stale
+            if cache_key in self._ticker_cache:
+                return self._ticker_cache[cache_key][1]
+            raise e
+
     async def _scan_markets(self) -> List[Dict]:
         """Scan all exchanges for trading opportunities."""
         opportunities = []
@@ -3062,28 +3129,27 @@ async def execute_strategy(state, opp):
         async def _fetch_tickers_safe(exchange_name: str, exchange) -> Dict[str, Any]:
             """Fetch tickers with robust fallback for exchanges that error on bulk calls (e.g., coinbase)."""
             try:
-                # Ensure markets are loaded; some exchanges require this to stabilize parsing
+                # First, try the most efficient method
+                await exchange.load_markets()
+                return await exchange.fetch_tickers()
+            except Exception:
+                # If that fails, fall back to fetching symbols and then tickers individually
+                log.warning(f"⚠️ {exchange_name} bulk fetch_tickers failed, falling back to individual fetch.")
                 try:
-                    await exchange.load_markets()
+                    markets = await exchange.fetch_markets()
+                    candidate_symbols = [m.get('symbol') for m in markets if m.get('active') and isinstance(m.get('symbol'), str) and '/' in m.get('symbol','')]
                 except Exception:
-                    pass
+                    # As a last resort, use any known symbols from the exchange instance
+                    candidate_symbols = [s for s in getattr(exchange, 'symbols', []) if isinstance(s, str) and '/' in s]
+                
+                candidate_symbols = candidate_symbols[:100] # Limit to avoid rate-limiting
+                tickers: Dict[str, Any] = {}
+                for sym in candidate_symbols:
                     try:
-                        markets = await exchange.fetch_markets()
-                        candidate_symbols = [m.get('symbol') for m in markets if m.get('active') and isinstance(m.get('symbol'), str) and '/' in m.get('symbol','')]
+                        tickers[sym] = await exchange.fetch_ticker(sym)
                     except Exception:
-                        # As a last resort, use any known symbols from the exchange instance
-                        candidate_symbols = [s for s in getattr(exchange, 'symbols', []) if isinstance(s, str) and '/' in s]
-                    candidate_symbols = candidate_symbols[:100]
-                    tickers: Dict[str, Any] = {}
-                    for sym in candidate_symbols:
-                        try:
-                            tickers[sym] = await exchange.fetch_ticker(sym)
-                        except Exception:
-                            continue
-                    return tickers
-                except Exception as fallback_error:
-                    log.error(f"{exchange_name} fallback markets/tickers failed: {fallback_error}")
-                    return {}
+                        continue # Skip symbols that fail
+                return tickers
         
         # Fetch tickers in parallel for all exchanges
         async def fetch_exchange_tickers(name, ex):
@@ -3425,30 +3491,48 @@ async def execute_strategy(state, opp):
             position_size = min(100, self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct))
         else:  # ACTIVE
             min_confidence = Config.MIN_CONF_ACTIVE  # Aggressive for proven strategies
-            # Use larger position sizes for moonshot with bandit weighting
-            if strategy.win_rate > 0.5 and strategy.avg_profit > 0:
-                kelly_size = calculate_kelly_position(
-                    strategy.win_rate,
-                    strategy.avg_profit,
-                    abs(strategy.avg_profit * (1 - strategy.win_rate) / strategy.win_rate) if strategy.win_rate > 0 else 0.05,
-                    max_position_pct=min(Config.MAX_POSITION_SIZE, strategy.max_position_pct),
-                    kelly_fraction=min(0.5, Config.KELLY_FRACTION)  # never exceed configured
-                )
-                position_multiplier = 1.0
-                try:
-                    position_multiplier = float(getattr(strategy, 'position_multiplier', 1.0) or 1.0)
-                except Exception:
-                    position_multiplier = 1.0
-                # Thompson Sampling bandit weight
-                try:
-                    alpha = strategy.winning_trades + 1
-                    beta = (strategy.total_trades - strategy.winning_trades) + 1
-                    bandit_weight = np.random.beta(alpha, beta)
-                except Exception:
-                    bandit_weight = 1.0
-                position_size = self.state.equity * kelly_size * position_multiplier * (0.5 + bandit_weight)
+            
+            # Compute realized stats on the fly if fields are missing
+            if not hasattr(strategy, '_avg_win_pct') or not hasattr(strategy, '_avg_loss_pct'):
+                rets = [t.get('pnl_pct', 0.0) for t in strategy.trade_history[-200:]]
+                wins = [r for r in rets if r > 0]
+                losses_abs = [-r for r in rets if r < 0]
+                avg_win = float(np.mean(wins)) if wins else 0.01
+                avg_loss = float(np.mean(losses_abs)) if losses_abs else 0.01
             else:
-                position_size = self.state.equity * min(0.08, Config.MAX_POSITION_SIZE)
+                avg_win = max(1e-4, float(strategy._avg_win_pct))
+                avg_loss = max(1e-4, float(strategy._avg_loss_pct))
+
+            # Use realized p (or fall back to running win_rate)
+            p = strategy.winning_trades / strategy.total_trades if strategy.total_trades > 0 else strategy.win_rate
+
+            kelly_size = calculate_kelly_position(
+                win_rate=max(0.0, min(1.0, p)),
+                avg_win=avg_win,
+                avg_loss=avg_loss,
+                max_position_pct=min(Config.MAX_POSITION_SIZE, strategy.max_position_pct),
+                kelly_fraction=Config.KELLY_FRACTION
+            )
+
+            # Bandit + confidence weighting (already in your code)
+            try:
+                alpha = strategy.winning_trades + 1
+                beta = (strategy.total_trades - strategy.winning_trades) + 1
+                bandit_weight = np.random.beta(alpha, beta)
+            except Exception:
+                bandit_weight = 1.0
+
+            conf_weight = 0.5 + 0.5 * float(confidence)   # scales 0.5→1.0
+            bandit_weight = 0.5 + 0.5 * bandit_weight     # scales 0.5→1.0
+
+            # Final notional (equity * Kelly * guards)
+            base = self.state.equity * kelly_size * conf_weight * bandit_weight
+
+            # Phase guard (your 8% cap for ACTIVE still applies)
+            position_size = min(
+                base,
+                self.state.equity * min(0.08, Config.MAX_POSITION_SIZE)
+            )
         
         log.info(f"💭 {strategy.name}: {action} {opp['symbol']} conf={confidence:.2f} (min={min_confidence:.2f})")
         
@@ -3735,6 +3819,36 @@ async def execute_strategy(state, opp):
                 if peak > 0:
                     current_dd = (peak - cumulative_returns[-1]) / peak
                     strategy.max_drawdown = max(strategy.max_drawdown, current_dd)
+            
+            # Compute realized win/loss stats for Kelly sizing
+            returns = [t.get('pnl_pct', 0.0) for t in strategy.trade_history[-200:]]  # last 200 trades
+            wins = [r for r in returns if r > 0]
+            losses_abs = [-r for r in returns if r < 0]
+
+            # Robust, shrinkage-friendly estimates using trimmed means
+            def _robust_mean(xs, fallback):
+                if not xs:
+                    return fallback
+                xs_sorted = sorted(xs)
+                lo = int(0.1 * len(xs_sorted))
+                hi = int(0.9 * len(xs_sorted))
+                trimmed = xs_sorted[lo: max(lo+1, hi)]
+                return float(np.mean(trimmed)) if trimmed else float(np.mean(xs_sorted))
+
+            strategy.avg_profit = float(np.mean(returns)) if returns else 0.0  # net average (kept for dashboards)
+            strategy._avg_win_pct = _robust_mean(wins, 0.01)                  # ~1% fallback
+            strategy._avg_loss_pct = _robust_mean(losses_abs, 0.01)           # abs magnitude
+            
+            # Close the pattern feedback loop
+            if strategy and strategy.pattern_id and strategy.pattern_id != "builtin":
+                try:
+                    await self.learning_memory.record_pattern_usage(
+                        strategy.pattern_id,
+                        success=(pnl_after_fees > 0),
+                        return_pct=float(pnl_pct)
+                    )
+                except Exception as e:
+                    log.warning(f"Pattern usage update failed: {e}")
             
             # Save updated strategy
             await self.db.save_strategy(strategy)
@@ -4047,15 +4161,7 @@ async def main():
     # Don't fail under pytest/unrecognized args
     args, _unknown = parser.parse_known_args()
 
-    # Setup logging with more detail
-    logging.basicConfig(
-        level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
-        format='%(asctime)s [%(levelname)s] %(message)s',
-        handlers=[
-            logging.FileHandler(f"v26meme_full.log"),
-            logging.StreamHandler()
-        ]
-    )
+    # Main function doesn't reconfigure logging - already set up at module level
     
     log.info("=" * 80)
     log.info("🚀 v26meme AUTONOMOUS TRADING SYSTEM v26.0.0")
