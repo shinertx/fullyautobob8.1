@@ -131,14 +131,16 @@ class Config:
     MIN_CONF_PAPER = float(os.getenv("MIN_CONF_PAPER", 0.20))
     MIN_CONF_MICRO = float(os.getenv("MIN_CONF_MICRO", 0.30))
     MIN_CONF_ACTIVE = float(os.getenv("MIN_CONF_ACTIVE", 0.40))
-    PAPER_EXPLORATION_PROB = float(os.getenv("PAPER_EXPLORATION_PROB", 0.01))
+    PAPER_EXPLORATION_PROB = float(os.getenv("PAPER_EXPLORATION_PROB", 0.15))
 
     # Exploration / probing (paper-mode)
-    EXPLORATION_EPS = float(os.getenv("EXPLORATION_EPS", 0.03))  # fraction of inert signals to probe
+    EXPLORATION_EPS = float(os.getenv("EXPLORATION_EPS", 0.15))  # fraction of inert signals to probe
     PROBE_SIZE_PAPER = float(os.getenv("PROBE_SIZE_PAPER", 15.0))  # $ per probe trade
     PROBE_MAX_SPREAD_BPS = float(os.getenv("PROBE_MAX_SPREAD_BPS", 40.0))  # require tight spread
     # Shorter PAPER hold so we can see open→close lifecycle quickly
     PAPER_MAX_HOLD_MIN = int(os.getenv("PAPER_MAX_HOLD_MIN", 90))
+    # PAPER-specific minimum trade size (allows $1-$5 probes even if live min is higher)
+    MIN_TRADE_SIZE_PAPER = float(os.getenv("MIN_TRADE_SIZE_PAPER", 1.0))
 
     # Promotion thresholds (env-overridable)
     BOOTSTRAP_PROMOTION = os.getenv("BOOTSTRAP_PROMOTION", "true").lower() == "true"
@@ -3111,7 +3113,10 @@ async def execute_strategy(state, opp):
                     quote = symbol.split('/')[-1]
                 except Exception:
                     quote = ''
-                if quote not in Config.ALLOWED_QUOTES:
+                allowed_quotes = {q.upper() for q in Config.ALLOWED_QUOTES} | {
+                    'USDT','USDC','USD','EUR','DAI','TUSD','USDP','FDUSD','EURC','BTC','ETH'
+                }
+                if quote.upper() not in allowed_quotes:
                     continue
                 # Coerce numeric fields safely
                 def _to_float(value, default=0.0):
@@ -3357,7 +3362,7 @@ async def execute_strategy(state, opp):
             if 'execute_strategy' in exec_globals:
                 try:
                     import asyncio
-                    result = await asyncio.wait_for(exec_globals['execute_strategy'](self.state, opp), timeout=0.25)
+                    result = await asyncio.wait_for(exec_globals['execute_strategy'](self.state, opp), timeout=0.5)
                     
                     # VALIDATE AND FIX RESULT
                     if not isinstance(result, dict):
@@ -3544,17 +3549,20 @@ async def execute_strategy(state, opp):
 
         # Enforce caps and cash
         if is_paper:
-            size = min(size, self.state.cash)
+            # Ensure we can hit the paper minimum even if per-strategy cap is tiny
+            max_cap = max(self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct), Config.MIN_TRADE_SIZE_PAPER)
+            size = min(size, max_cap, self.state.cash)
         else:
             max_cap = self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct)
             # Per-asset phase cap
             phase_cap = 0.02 if self.state.mode == TradingMode.MICRO else 0.08
             size = min(size, max_cap, self.state.cash, self.state.equity * phase_cap)
         
-        if size < Config.MIN_TRADE_SIZE:
+        min_trade_size = Config.MIN_TRADE_SIZE_PAPER if is_paper else Config.MIN_TRADE_SIZE
+        if size < min_trade_size:
             log.debug(f"Position size ${size:.2f} below minimum")
-            if is_paper and self.state.cash >= Config.MIN_TRADE_SIZE:
-                size = Config.MIN_TRADE_SIZE
+            if is_paper and self.state.cash >= min_trade_size:
+                size = min_trade_size
             else:
                 return
         
