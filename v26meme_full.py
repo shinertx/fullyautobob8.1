@@ -126,6 +126,16 @@ class Config:
     CHECK_ORDERBOOK_DEPTH = os.getenv("CHECK_ORDERBOOK_DEPTH", "true").lower() == "true"
     MIN_OB_DEPTH_USD = float(os.getenv("MIN_OB_DEPTH_USD", 5000))  # Top 5 levels per side
 
+    # Promotion thresholds (env-overridable)
+    BOOTSTRAP_PROMOTION = os.getenv("BOOTSTRAP_PROMOTION", "true").lower() == "true"
+    PROMOTE_PAPER_MIN_TRADES = int(os.getenv("PROMOTE_PAPER_MIN_TRADES", 10))
+    PROMOTE_PAPER_WILSON = float(os.getenv("PROMOTE_PAPER_WILSON", 0.52))
+    PROMOTE_PAPER_SHARPE = float(os.getenv("PROMOTE_PAPER_SHARPE", 0.3))
+    PROMOTE_MICRO_MIN_TRADES = int(os.getenv("PROMOTE_MICRO_MIN_TRADES", 30))
+    PROMOTE_MICRO_WINRATE = float(os.getenv("PROMOTE_MICRO_WINRATE", 0.55))
+    PROMOTE_MICRO_SHARPE = float(os.getenv("PROMOTE_MICRO_SHARPE", 0.8))
+    PROMOTE_MICRO_MIN_PNL = float(os.getenv("PROMOTE_MICRO_MIN_PNL", 0.0))
+
     # Mode
     MODE = os.getenv("MODE", "PAPER").strip().lower()
 
@@ -562,9 +572,13 @@ class Database:
     async def save_state(self, state: SystemState):
         """Save system state snapshot."""
         cursor = self.conn.cursor()
-        cursor.execute('''
-            INSERT INTO system_state VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
+            positions_payload = {
+                pid: {**asdict(pos), 'opened_at': pos.opened_at.isoformat()}
+                for pid, pos in state.positions.items()
+            }
+            cursor.execute('''
+                INSERT INTO system_state VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
             state.mode.value,
             state.equity,
             state.cash,
@@ -572,7 +586,7 @@ class Database:
             state.total_pnl,
             state.win_rate,
             state.trades_today,
-            json.dumps({pid: asdict(pos) for pid, pos in state.positions.items()}),
+                json.dumps(positions_payload),
             state.start_time.isoformat(),
             state.last_update.isoformat(),
             datetime.utcnow().isoformat()
@@ -1207,8 +1221,8 @@ class PatternDiscoveryEngine:
                 # Coinbase Advanced Trade often lacks 5m/15m OHLCV. Skip if timeframe unsupported.
                 if hasattr(exchange, 'timeframes') and isinstance(exchange.timeframes, dict):
                     if '15m' not in exchange.timeframes:
-                        log.warning(f"{exchange_name} lacks 15m timeframe; skipping volume/time/volatility discovery")
-                        return
+                        log.warning(f"{exchange_name} lacks 15m timeframe; skipping volume/time/volatility discovery on this exchange")
+                        continue
                 # Build tickers robustly for Coinbase
                 if exchange_name == 'coinbase':
                     try:
@@ -1322,8 +1336,8 @@ class PatternDiscoveryEngine:
                     pass
                 if hasattr(exchange, 'timeframes') and isinstance(exchange.timeframes, dict):
                     if '5m' not in exchange.timeframes and '15m' not in exchange.timeframes and '1h' not in exchange.timeframes:
-                        log.warning(f"{exchange_name} lacks required timeframes; skipping microstructure discovery")
-                        return
+                        log.warning(f"{exchange_name} lacks required timeframes; skipping microstructure discovery on this exchange")
+                        continue
                 if exchange_name == 'coinbase':
                     try:
                         await exchange.load_markets()
@@ -1497,8 +1511,9 @@ class PatternDiscoveryEngine:
                                     rejection_rate = results.count('rejection') / len([r for r in results if r in ['breakthrough', 'rejection']]) if 'rejection' in results or 'breakthrough' in results else 0
                                     support_rate = results.count('support') / len([r for r in results if r in ['breakdown', 'support']]) if 'support' in results or 'breakdown' in results else 0
 
-                                    pattern = {
-                                        'level': float(nearest_level),
+                                     pattern = {
+                                         'type': 'psychological_level',
+                                         'level': float(nearest_level),
                                         'current_price': float(current_price),
                                         'rejection_rate': float(rejection_rate),
                                         'support_rate': float(support_rate),
@@ -2595,7 +2610,7 @@ async def execute_strategy(state, opp):
                 # Need minimum trades before evaluation
                 min_trades = 50 if phase == "Discovery" else 30
                 
-                if strategy.total_trades >= min_trades:
+                if strategy.total_trades >= (Config.PROMOTE_PAPER_MIN_TRADES if Config.BOOTSTRAP_PROMOTION else min_trades):
                     # Calculate Wilson score for win rate (better for small samples)
                     wins = strategy.winning_trades
                     total = strategy.total_trades
@@ -2604,18 +2619,22 @@ async def execute_strategy(state, opp):
                     p_hat = wins / total if total > 0 else 0
                     wilson_score = (p_hat + z*z/(2*total) - z * math.sqrt((p_hat*(1-p_hat) + z*z/(4*total))/total)) / (1 + z*z/total)
                     
-                    # Promotion criteria varies by phase
-                    if phase == "Discovery":
-                        promote_threshold = 0.52  # Just need to be profitable
-                        sharpe_threshold = 0.5
-                    elif phase == "Optimization":
-                        promote_threshold = 0.55
-                        sharpe_threshold = 1.0
-                    else:  # Scaling/Domination
-                        promote_threshold = 0.60
-                        sharpe_threshold = 1.5
+                    # Promotion criteria (bootstrap vs phase)
+                    if Config.BOOTSTRAP_PROMOTION:
+                        promote_threshold = Config.PROMOTE_PAPER_WILSON
+                        sharpe_threshold = Config.PROMOTE_PAPER_SHARPE
+                    else:
+                        if phase == "Discovery":
+                            promote_threshold = 0.52  # Just need to be profitable
+                            sharpe_threshold = 0.5
+                        elif phase == "Optimization":
+                            promote_threshold = 0.55
+                            sharpe_threshold = 1.0
+                        else:  # Scaling/Domination
+                            promote_threshold = 0.60
+                            sharpe_threshold = 1.5
                     
-                    if wilson_score > promote_threshold and strategy.sharpe_ratio > sharpe_threshold:
+                    if wilson_score >= promote_threshold and strategy.sharpe_ratio >= sharpe_threshold:
                         # Promote to micro trading
                         strategy.status = StrategyStatus.MICRO
                         await self.db.save_strategy(strategy)
@@ -2630,8 +2649,12 @@ async def execute_strategy(state, opp):
             
             elif strategy.status == StrategyStatus.MICRO:
                 # Evaluate micro strategies for full activation
-                if strategy.total_trades >= 100:
-                    if strategy.win_rate > 0.58 and strategy.sharpe_ratio > 1.2 and strategy.total_pnl > 0:
+                min_trades_active = Config.PROMOTE_MICRO_MIN_TRADES if Config.BOOTSTRAP_PROMOTION else 100
+                if strategy.total_trades >= min_trades_active:
+                    win_ok = strategy.win_rate >= (Config.PROMOTE_MICRO_WINRATE if Config.BOOTSTRAP_PROMOTION else 0.58)
+                    sharpe_ok = strategy.sharpe_ratio >= (Config.PROMOTE_MICRO_SHARPE if Config.BOOTSTRAP_PROMOTION else 1.2)
+                    pnl_ok = strategy.total_pnl >= Config.PROMOTE_MICRO_MIN_PNL
+                    if win_ok and sharpe_ok and pnl_ok:
                         strategy.status = StrategyStatus.ACTIVE
                         
                         # Increase position size for proven strategies
@@ -3207,11 +3230,22 @@ class AutonomousTrader:
                 'detect_psychological_level_proximity': _detect_psychological_level_proximity
             }
             
-            # Reject obvious symbol-specific strategies to enforce agnosticism
-            illegal_patterns = ["opp['symbol'] ==", '== \"', '==\"', 'SWELL/USDC', 'PROVE/USDC']
-            lowered_code = strategy.code
-            if any(p in lowered_code for p in illegal_patterns):
+            # Reject symbol-hardcoding (but allow normal comparisons)
+            import re, ast
+            SYMBOL_EQ_RE = re.compile(r"opp\[['\"]symbol['\"]\]\s*==\s*['\"][A-Z0-9_\-/:]+['\"]")
+            if SYMBOL_EQ_RE.search(strategy.code):
                 return {'action': 'hold', 'conf': 0.0, 'reason': 'Symbol-specific logic rejected'}
+
+            # Static code audit: reject dangerous nodes
+            try:
+                tree = ast.parse(strategy.code)
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.Import, ast.ImportFrom, ast.With, ast.Try, ast.Raise, ast.Global, ast.Nonlocal, ast.Lambda)):
+                        return {'action': 'hold', 'conf': 0.0, 'reason': 'Disallowed construct'}
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {'exec', 'eval', 'open', '__import__'}:
+                        return {'action': 'hold', 'conf': 0.0, 'reason': 'Disallowed call'}
+            except Exception:
+                return {'action': 'hold', 'conf': 0.0, 'reason': 'parse_error'}
 
             # Execute the strategy code
             exec(strategy.code, exec_globals)
@@ -3219,7 +3253,8 @@ class AutonomousTrader:
             # Call the execute_strategy function with better error handling
             if 'execute_strategy' in exec_globals:
                 try:
-                    result = await exec_globals['execute_strategy'](self.state, opp)
+                    import asyncio
+                    result = await asyncio.wait_for(exec_globals['execute_strategy'](self.state, opp), timeout=0.25)
                     
                     # VALIDATE AND FIX RESULT
                     if not isinstance(result, dict):

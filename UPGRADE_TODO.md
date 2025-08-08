@@ -36,3 +36,15 @@ Status: In progress
 After these remaining items, re-run tests and a PAPER dry run for 5-10 minutes to validate loops, sizing, and risk guards.
 
 
+## Post-bootstrap hardening (promotion thresholds)
+
+- [ ] Create branch `hardening/promotion-thresholds`
+- [ ] Revert bootstrap env defaults to strict mode (disable BOOTSTRAP_PROMOTION by default)
+  - [ ] Set `BOOTSTRAP_PROMOTION=false`
+  - [ ] Restore PAPER→MICRO defaults: min trades 20, Wilson ≥ 0.52, Sharpe ≥ 0.5 (Discovery)
+  - [ ] Restore MICRO→ACTIVE defaults: min trades 100, win rate ≥ 0.58, Sharpe ≥ 1.2, PnL > 0
+- [ ] Make thresholds configurable only via `.env` in production, not baked-in runtime overrides
+- [ ] Add unit tests for promotion/demotion boundaries
+- [ ] Update README with recommended production thresholds
+- [ ] Open PR and merge after 24-48h observation window
+
