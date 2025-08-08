@@ -55,3 +55,28 @@ INFO:     127.0.0.1:33844 - "GET /api/positions HTTP/1.1" 200 OK
 INFO:     127.0.0.1:47820 - "GET /api/overview HTTP/1.1" 200 OK
 INFO:     127.0.0.1:45834 - "GET /?vscodeBrowserReqId=1754633760707 HTTP/1.1" 200 OK
 INFO:     127.0.0.1:40908 - "GET /api/overview HTTP/1.1" 200 OK
+WARNING:  StatReload detected changes in 'web_dashboard.py'. Reloading...
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+INFO:     Finished server process [423302]
+INFO:     Started server process [430115]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     127.0.0.1:40918 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52542 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60066 - "GET /api/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60078 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:37718 - "GET /api/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:48320 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38946 - "HEAD / HTTP/1.1" 405 Method Not Allowed
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:53236 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53252 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     3.149.59.26:45276 - "GET / HTTP/1.1" 200 OK
+INFO:     3.149.59.26:60896 - "GET / HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     146.190.134.221:53270 - "GET / HTTP/1.1" 200 OK
+WARNING:  Invalid HTTP request received.
+INFO:     127.0.0.1:45598 - "GET /api/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40684 - "GET /api/positions HTTP/1.1" 200 OK
