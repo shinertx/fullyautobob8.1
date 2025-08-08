@@ -125,6 +125,13 @@ class Config:
     MAX_SPREAD_BPS = float(os.getenv("MAX_SPREAD_BPS", 50))  # 50 bps = 0.5%
     CHECK_ORDERBOOK_DEPTH = os.getenv("CHECK_ORDERBOOK_DEPTH", "true").lower() == "true"
     MIN_OB_DEPTH_USD = float(os.getenv("MIN_OB_DEPTH_USD", 5000))  # Top 5 levels per side
+    PRICE_FLOOR = float(os.getenv("PRICE_FLOOR", 0.05))  # Minimum tradable price
+
+    # Confidence thresholds (env-overridable)
+    MIN_CONF_PAPER = float(os.getenv("MIN_CONF_PAPER", 0.20))
+    MIN_CONF_MICRO = float(os.getenv("MIN_CONF_MICRO", 0.30))
+    MIN_CONF_ACTIVE = float(os.getenv("MIN_CONF_ACTIVE", 0.40))
+    PAPER_EXPLORATION_PROB = float(os.getenv("PAPER_EXPLORATION_PROB", 0.01))
 
     # Promotion thresholds (env-overridable)
     BOOTSTRAP_PROMOTION = os.getenv("BOOTSTRAP_PROMOTION", "true").lower() == "true"
@@ -3343,13 +3350,13 @@ class AutonomousTrader:
 
         # AGGRESSIVE confidence thresholds for moonshot goal
         if strategy.status == StrategyStatus.PAPER:
-            min_confidence = 0.20  # Very low threshold to start testing
+            min_confidence = Config.MIN_CONF_PAPER  # Very low threshold to start testing
             position_size = 100  # Simulated $100
         elif strategy.status == StrategyStatus.MICRO:
-            min_confidence = 0.30  # Still aggressive
+            min_confidence = Config.MIN_CONF_MICRO  # Still aggressive
             position_size = min(100, self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct))
         else:  # ACTIVE
-            min_confidence = 0.40  # Aggressive for proven strategies
+            min_confidence = Config.MIN_CONF_ACTIVE  # Aggressive for proven strategies
             # Use larger position sizes for moonshot with bandit weighting
             if strategy.win_rate > 0.5 and strategy.avg_profit > 0:
                 kelly_size = calculate_kelly_position(
@@ -3378,8 +3385,12 @@ class AutonomousTrader:
         log.info(f"💭 {strategy.name}: {action} {opp['symbol']} conf={confidence:.2f} (min={min_confidence:.2f})")
         
         if confidence < min_confidence:
-            log.debug(f"❌ Confidence {confidence:.2f} below threshold {min_confidence:.2f}")
-            return
+            # Exploration: in PAPER mode, occasionally take tiny probes
+            if self.state.mode == TradingMode.PAPER and random.random() < Config.PAPER_EXPLORATION_PROB:
+                log.info("🧪 Exploration trade in PAPER mode")
+            else:
+                log.debug(f"❌ Confidence {confidence:.2f} below threshold {min_confidence:.2f}")
+                return
         
         # Check if we already have a position in this symbol
         existing_position = None
