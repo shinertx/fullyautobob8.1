@@ -3393,8 +3393,8 @@ class AutonomousTrader:
                     # Simple heuristic: buy dips, else random
                     change_pct = opp.get('change_24h_pct', opp.get('change_24h', 0.0)) or 0.0
                     action = 'buy' if change_pct <= 0 else ('buy' if random.random() < 0.5 else 'sell')
-                # Use a smaller paper probe size
-                position_size = min(25, self.state.equity * 0.01)
+                # Use a small but valid paper probe size (at least minimum trade size)
+                position_size = max(Config.MIN_TRADE_SIZE, self.state.equity * 0.02)
                 # Provide default SL/TP if none
                 if decision_sl is None:
                     decision_sl = opp['price'] * (0.98 if action == 'buy' else 1.02)
