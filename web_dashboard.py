@@ -699,17 +699,59 @@ class TradingDashboard:
     </div>
 
     <script>
-        // WebSocket connection for real-time updates
-        let ws;
+        // Polling connection for real-time updates (fallback from WebSocket)
+        let updateInterval;
         let equityChart, dailyChart;
+        
+        function startPolling() {
+            // Update every 3 seconds via polling
+            updateInterval = setInterval(async function() {
+                try {
+                    const response = await fetch('/api/overview');
+                    const overview = await response.json();
+                    
+                    const positionsResponse = await fetch('/api/positions');
+                    const positions = await positionsResponse.json();
+                    
+                    const strategiesResponse = await fetch('/api/strategies');
+                    const strategies = await strategiesResponse.json();
+                    
+                    const patternsResponse = await fetch('/api/patterns');
+                    const patterns = await patternsResponse.json();
+                    
+                    const tradesResponse = await fetch('/api/trades');
+                    const trades = await tradesResponse.json();
+                    
+                    const data = {
+                        overview: overview,
+                        positions: positions,
+                        strategies: strategies,
+                        patterns: patterns,
+                        trades: trades
+                    };
+                    
+                    updateDashboard(data);
+                    document.getElementById('status').textContent = '🟢 Connected (Polling)';
+                    document.getElementById('status').className = 'text-lg font-semibold text-green-400';
+                } catch (error) {
+                    console.error('Polling error:', error);
+                    document.getElementById('status').textContent = '🔴 Error';
+                    document.getElementById('status').className = 'text-lg font-semibold text-red-400';
+                }
+            }, 3000);
+        }
         
         function connectWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
             
             ws.onopen = function(event) {
-                document.getElementById('status').textContent = '🟢 Connected';
+                document.getElementById('status').textContent = '🟢 Connected (WebSocket)';
                 document.getElementById('status').className = 'text-lg font-semibold text-green-400';
+                // Clear polling if WebSocket works
+                if (updateInterval) {
+                    clearInterval(updateInterval);
+                }
             };
             
             ws.onmessage = function(event) {
@@ -718,14 +760,16 @@ class TradingDashboard:
             };
             
             ws.onclose = function(event) {
-                document.getElementById('status').textContent = '🔴 Disconnected';
-                document.getElementById('status').className = 'text-lg font-semibold text-red-400';
-                // Reconnect after 5 seconds
-                setTimeout(connectWebSocket, 5000);
+                document.getElementById('status').textContent = '🔴 Disconnected - Using Polling';
+                document.getElementById('status').className = 'text-lg font-semibold text-yellow-400';
+                // Fallback to polling
+                startPolling();
             };
             
             ws.onerror = function(error) {
                 console.error('WebSocket error:', error);
+                // Fallback to polling
+                startPolling();
             };
         }
         
@@ -948,6 +992,8 @@ class TradingDashboard:
         // Initialize everything
         document.addEventListener('DOMContentLoaded', function() {
             initCharts();
+            // Start with polling, try WebSocket as fallback
+            startPolling();
             connectWebSocket();
         });
     </script>

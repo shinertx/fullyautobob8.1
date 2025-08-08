@@ -1,82 +1,23 @@
 nohup: ignoring input
 INFO:     Will watch for changes in these directories: ['/home/benjaminjones/fullyautobob8.1']
 INFO:     Uvicorn running on http://0.0.0.0:8080 (Press CTRL+C to quit)
-INFO:     Started reloader process [422094] using StatReload
-INFO:     Started server process [422103]
+INFO:     Started reloader process [444480] using StatReload
+INFO:     Started server process [444483]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-ERROR:web_dashboard:Error getting system overview: 'sqlite3.Row' object has no attribute 'get'
-INFO:     127.0.0.1:60426 - "GET /api/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51910 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44288 - "GET /api/overview HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33406 - "GET /?vscodeBrowserReqId=1754635338969 HTTP/1.1" 200 OK
 WARNING:  StatReload detected changes in 'web_dashboard.py'. Reloading...
 INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
-INFO:     Finished server process [422103]
-INFO:     Started server process [422492]
+INFO:     Finished server process [444483]
+INFO:     Started server process [444761]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
-INFO:     127.0.0.1:51672 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:32836 - "GET / HTTP/1.1" 200 OK
-WARNING:  StatReload detected changes in 'web_dashboard.py'. Reloading...
 INFO:     Shutting down
 INFO:     Waiting for application shutdown.
 INFO:     Application shutdown complete.
-INFO:     Finished server process [422492]
-INFO:     Started server process [422841]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     127.0.0.1:42000 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:41464 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:41470 - "GET /api/positions HTTP/1.1" 200 OK
-WARNING:  StatReload detected changes in 'web_dashboard.py'. Reloading...
-INFO:     Shutting down
-INFO:     Waiting for application shutdown.
-INFO:     Application shutdown complete.
-INFO:     Finished server process [422841]
-INFO:     Started server process [423302]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     127.0.0.1:57100 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57108 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39960 - "HEAD / HTTP/1.1" 405 Method Not Allowed
-INFO:     127.0.0.1:39968 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:38232 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58888 - "GET /?vscodeBrowserReqId=1754633195762 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59420 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55246 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:42704 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:35846 - "GET /?vscodeBrowserReqId=1754633270774 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:39006 - "GET / HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59804 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59818 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54560 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60710 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:33844 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:47820 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:45834 - "GET /?vscodeBrowserReqId=1754633760707 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:40908 - "GET /api/overview HTTP/1.1" 200 OK
-WARNING:  StatReload detected changes in 'web_dashboard.py'. Reloading...
-INFO:     Shutting down
-INFO:     Waiting for application shutdown.
-INFO:     Application shutdown complete.
-INFO:     Finished server process [423302]
-INFO:     Started server process [430115]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     127.0.0.1:40918 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52542 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60066 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60078 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:37718 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:48320 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:38946 - "HEAD / HTTP/1.1" 405 Method Not Allowed
-WARNING:  Invalid HTTP request received.
-INFO:     127.0.0.1:53236 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53252 - "GET /api/positions HTTP/1.1" 200 OK
-INFO:     3.149.59.26:45276 - "GET / HTTP/1.1" 200 OK
-INFO:     3.149.59.26:60896 - "GET / HTTP/1.1" 200 OK
-WARNING:  Invalid HTTP request received.
-INFO:     146.190.134.221:53270 - "GET / HTTP/1.1" 200 OK
-WARNING:  Invalid HTTP request received.
-INFO:     127.0.0.1:45598 - "GET /api/overview HTTP/1.1" 200 OK
-INFO:     127.0.0.1:40684 - "GET /api/positions HTTP/1.1" 200 OK
+INFO:     Finished server process [444761]
+INFO:     Stopping reloader process [444480]

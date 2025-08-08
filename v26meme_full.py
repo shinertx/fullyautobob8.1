@@ -3481,6 +3481,7 @@ async def execute_strategy(state, opp):
         
         # Execute the action
         if action == 'buy' and not existing_position:
+            log.info(f"🔍 DEBUG: Calling _open_position for BUY - action='{action}', existing_position={existing_position}")
             await self._open_position(
                 strategy,
                 opp,
@@ -3491,6 +3492,7 @@ async def execute_strategy(state, opp):
                 decision_tp
             )
         elif action == 'sell' and not existing_position:
+            log.info(f"🔍 DEBUG: Calling _open_position for SELL - action='{action}', existing_position={existing_position}")
             # Short selling (if supported)
             if self.state.mode != TradingMode.PAPER:
                 log.debug(f"Short selling not implemented for {opp['symbol']}")
@@ -3505,14 +3507,19 @@ async def execute_strategy(state, opp):
                     decision_tp
                 )
         elif action in ['close', 'exit'] and existing_position:
+            log.info(f"🔍 DEBUG: Closing existing position - action='{action}'")
             await self._close_position(existing_position, reason)
+        else:
+            log.info(f"🔍 DEBUG: No action taken - action='{action}', existing_position={existing_position}")
 
     async def _open_position(self, strategy: Strategy, opp: Dict, side: str, size: float, reason: str, sl: Optional[float] = None, tp: Optional[float] = None):
         """Open a new trading position."""
         
+        log.info(f"🔍 DEBUG: Attempting to open {side} position for {opp['symbol']} size=${size:.2f}")
+        
         # Risk checks
         if len(self.state.positions) >= 20:  # Max 20 concurrent positions
-            log.debug("Maximum positions reached")
+            log.info(f"🔍 DEBUG: Blocked - Maximum positions reached (20)")
             return
 
         # Simple correlation/overlap controls
@@ -3522,15 +3529,16 @@ async def execute_strategy(state, opp):
             base, quote = opp['symbol'], ''
         same_quote = [p for p in self.state.positions.values() if p.symbol.endswith(f"/{quote}")] if quote else []
         same_base = [p for p in self.state.positions.values() if p.symbol.startswith(f"{base}/")] if base else []
-        if len(same_quote) >= 5:
-            log.debug("Correlation cap: too many positions in same quote")
+        if len(same_quote) >= 20:  # Increased from 5 to 20 for more trading activity
+            log.info(f"🔍 DEBUG: Blocked - Correlation cap: too many positions in same quote ({len(same_quote)} >= 20)")
             return
         if len(same_base) >= 3:
-            log.debug("Correlation cap: too many positions in same base")
+            log.info(f"🔍 DEBUG: Blocked - Correlation cap: too many positions in same base ({len(same_base)} >= 3)")
             return
         
         # Price floor
         if opp.get('price', 0.0) and opp['price'] < 0.05:
+            log.info(f"🔍 DEBUG: Blocked - Price floor: {opp.get('price', 0.0)} < 0.05")
             return
 
         # Quote exposure cap (<=30% equity per quote)
@@ -3544,7 +3552,7 @@ async def execute_strategy(state, opp):
                 p.amount * p.current_price for p in self.state.positions.values() if p.symbol.endswith(f"/{quote}")
             )
             if (quote_exposure + size) > (0.30 * self.state.equity):
-                log.debug("Quote exposure cap blocked non-paper trade")
+                log.info(f"🔍 DEBUG: Blocked - Quote exposure cap: {(quote_exposure + size):.2f} > {0.30 * self.state.equity:.2f}")
                 return
 
         # Enforce caps and cash
@@ -3552,6 +3560,7 @@ async def execute_strategy(state, opp):
             # Ensure we can hit the paper minimum even if per-strategy cap is tiny
             max_cap = max(self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct), Config.MIN_TRADE_SIZE_PAPER)
             size = min(size, max_cap, self.state.cash)
+            log.info(f"🔍 DEBUG: Paper mode - size=${size:.2f}, max_cap=${max_cap:.2f}, cash=${self.state.cash:.2f}")
         else:
             max_cap = self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct)
             # Per-asset phase cap
@@ -3560,11 +3569,14 @@ async def execute_strategy(state, opp):
         
         min_trade_size = Config.MIN_TRADE_SIZE_PAPER if is_paper else Config.MIN_TRADE_SIZE
         if size < min_trade_size:
-            log.debug(f"Position size ${size:.2f} below minimum")
+            log.info(f"🔍 DEBUG: Blocked - Position size ${size:.2f} below minimum ${min_trade_size:.2f}")
             if is_paper and self.state.cash >= min_trade_size:
                 size = min_trade_size
+                log.info(f"🔍 DEBUG: Adjusted size to minimum: ${size:.2f}")
             else:
                 return
+        
+        log.info(f"🔍 DEBUG: Proceeding with position - size=${size:.2f}, price=${opp.get('price', 0):.4f}")
         
         # Calculate position details
         position = Position(
@@ -3621,6 +3633,8 @@ async def execute_strategy(state, opp):
         # Update strategy metrics
         strategy.total_trades += 1
         strategy.last_trade = datetime.utcnow()
+        
+        log.info(f"🔍 DEBUG: Successfully opened position - ID: {position.id}, Cash remaining: ${self.state.cash:.2f}")
 
     async def _close_position(self, position: Position, reason: str = "Strategy exit"):
         """Close an existing position."""
