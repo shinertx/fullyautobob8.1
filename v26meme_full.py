@@ -137,6 +137,8 @@ class Config:
     EXPLORATION_EPS = float(os.getenv("EXPLORATION_EPS", 0.03))  # fraction of inert signals to probe
     PROBE_SIZE_PAPER = float(os.getenv("PROBE_SIZE_PAPER", 15.0))  # $ per probe trade
     PROBE_MAX_SPREAD_BPS = float(os.getenv("PROBE_MAX_SPREAD_BPS", 40.0))  # require tight spread
+    # Shorter PAPER hold so we can see open→close lifecycle quickly
+    PAPER_MAX_HOLD_MIN = int(os.getenv("PAPER_MAX_HOLD_MIN", 90))
 
     # Promotion thresholds (env-overridable)
     BOOTSTRAP_PROMOTION = os.getenv("BOOTSTRAP_PROMOTION", "true").lower() == "true"
@@ -3339,10 +3341,11 @@ async def execute_strategy(state, opp):
             # Static code audit: reject dangerous nodes
             try:
                 tree = ast.parse(strategy.code)
+                DISALLOWED_NODES = (ast.Import, ast.ImportFrom, ast.With, ast.Raise, ast.Global, ast.Nonlocal, ast.Lambda)
                 for node in ast.walk(tree):
-                    if isinstance(node, (ast.Import, ast.ImportFrom, ast.With, ast.Try, ast.Raise, ast.Global, ast.Nonlocal, ast.Lambda)):
+                    if isinstance(node, DISALLOWED_NODES):
                         return {'action': 'hold', 'conf': 0.0, 'reason': 'Disallowed construct'}
-                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {'exec', 'eval', 'open', '__import__'}:
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {'exec', 'eval', 'open', '__import__', 'compile'}:
                         return {'action': 'hold', 'conf': 0.0, 'reason': 'Disallowed call'}
             except Exception:
                 return {'action': 'hold', 'conf': 0.0, 'reason': 'parse_error'}
@@ -3410,8 +3413,8 @@ async def execute_strategy(state, opp):
 
         # AGGRESSIVE confidence thresholds for moonshot goal
         if strategy.status == StrategyStatus.PAPER:
-            min_confidence = Config.MIN_CONF_PAPER  # Very low threshold to start testing
-            position_size = 100  # Simulated $100
+            min_confidence = Config.MIN_CONF_PAPER
+            position_size = max(Config.PROBE_SIZE_PAPER, Config.MIN_TRADE_SIZE)
         elif strategy.status == StrategyStatus.MICRO:
             min_confidence = Config.MIN_CONF_MICRO  # Still aggressive
             position_size = min(100, self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct))
@@ -3530,22 +3533,30 @@ async def execute_strategy(state, opp):
             base, quote = opp['symbol'].split('/')
         except Exception:
             base, quote = opp['symbol'], ''
-        if quote:
+        is_paper = (self.state.mode == TradingMode.PAPER) or (strategy.status == StrategyStatus.PAPER)
+        if quote and not is_paper:
             quote_exposure = sum(
                 p.amount * p.current_price for p in self.state.positions.values() if p.symbol.endswith(f"/{quote}")
             )
             if (quote_exposure + size) > (0.30 * self.state.equity):
+                log.debug("Quote exposure cap blocked non-paper trade")
                 return
 
         # Enforce caps and cash
-        max_cap = self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct)
-        # Per-asset phase cap
-        phase_cap = 0.02 if self.state.mode == TradingMode.MICRO else 0.08
-        size = min(size, max_cap, self.state.cash, self.state.equity * phase_cap)
+        if is_paper:
+            size = min(size, self.state.cash)
+        else:
+            max_cap = self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct)
+            # Per-asset phase cap
+            phase_cap = 0.02 if self.state.mode == TradingMode.MICRO else 0.08
+            size = min(size, max_cap, self.state.cash, self.state.equity * phase_cap)
         
         if size < Config.MIN_TRADE_SIZE:
             log.debug(f"Position size ${size:.2f} below minimum")
-            return
+            if is_paper and self.state.cash >= Config.MIN_TRADE_SIZE:
+                size = Config.MIN_TRADE_SIZE
+            else:
+                return
         
         # Calculate position details
         position = Position(
@@ -3771,9 +3782,14 @@ async def execute_strategy(state, opp):
                 elif position.side == 'sell' and current_price <= position.take_profit:
                     await self._close_position(position, "Take profit hit")
                 
-                # Time-based exit (positions older than 24 hours)
-                elif (datetime.utcnow() - position.opened_at).total_seconds() > 86400:
-                    await self._close_position(position, "Time limit (24h)")
+                else:
+                    # Time-based exit (shorter in PAPER to validate lifecycle)
+                    max_hold_sec = 86400
+                    if self.state.mode == TradingMode.PAPER:
+                        max_hold_sec = max(60, Config.PAPER_MAX_HOLD_MIN) * 60
+                    if (datetime.utcnow() - position.opened_at).total_seconds() > max_hold_sec:
+                        hours = max_hold_sec // 3600
+                        await self._close_position(position, f"Time limit ({hours}h)")
                     
             except Exception as e:
                 log.error(f"Error managing position {position.id}: {e}")
