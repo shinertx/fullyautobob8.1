@@ -572,13 +572,13 @@ class Database:
     async def save_state(self, state: SystemState):
         """Save system state snapshot."""
         cursor = self.conn.cursor()
-            positions_payload = {
-                pid: {**asdict(pos), 'opened_at': pos.opened_at.isoformat()}
-                for pid, pos in state.positions.items()
-            }
-            cursor.execute('''
-                INSERT INTO system_state VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
+        positions_payload = {
+            pid: {**asdict(pos), 'opened_at': pos.opened_at.isoformat()}
+            for pid, pos in state.positions.items()
+        }
+        cursor.execute('''
+            INSERT INTO system_state VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
             state.mode.value,
             state.equity,
             state.cash,
@@ -586,7 +586,7 @@ class Database:
             state.total_pnl,
             state.win_rate,
             state.trades_today,
-                json.dumps(positions_payload),
+            json.dumps(positions_payload),
             state.start_time.isoformat(),
             state.last_update.isoformat(),
             datetime.utcnow().isoformat()
