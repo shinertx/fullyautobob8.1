@@ -482,26 +482,6 @@ class Database:
 
         self.conn.commit()
         
-        # Create current_positions table for dashboard/state sync
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS current_positions (
-                id TEXT PRIMARY KEY,
-                strategy_id TEXT,
-                symbol TEXT,
-                exchange TEXT,
-                side TEXT,
-                amount REAL,
-                entry_price REAL,
-                current_price REAL,
-                pnl REAL,
-                pnl_pct REAL,
-                opened_at TEXT,
-                stop_loss REAL,
-                take_profit REAL
-            )
-        ''')
-        self.conn.commit()
-
     async def save_pattern(self, pattern: Pattern):
         """Save a discovered pattern to database."""
         cursor = self.conn.cursor()
@@ -1029,6 +1009,26 @@ class PatternDiscoveryEngine:
         """
         The core loop for discovering new patterns. This runs periodically.
         """
+        log.info("🔬 Starting pattern discovery cycle...")
+        
+        # Run all discovery methods in parallel for speed
+        tasks = [
+            self._discover_price_action_patterns(),
+            self._discover_volume_patterns(),
+            self._discover_time_based_patterns(),
+            self._discover_correlation_patterns(),
+            self._discover_psychological_patterns(),
+            self._discover_volatility_patterns(),
+            self._discover_microstructure_patterns()
+        ]
+
+        # Optional discovery modules
+        if Config.FEED_LISTING:
+            tasks.append(self._discover_listing_events())
+        # Weekend behavior patterns
+        if Config.FEED_WEEKEND:
+            tasks.append(self._discover_weekend_patterns())
+        # Cross-exchange spreads/stat-arb
         log.info("🔬 Starting pattern discovery cycle...")
         
         # Run all discovery methods in parallel for speed
