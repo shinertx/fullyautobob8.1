@@ -1480,8 +1480,8 @@ class PatternDiscoveryEngine:
                     if not is_sane_ticker(symbol):
                         continue
                     
-                    current_price = ticker.get('last', 0)
-                    if current_price <= 0:
+                    current_price = ticker.get('last')
+                    if current_price is None or current_price <= 0:
                         continue
                     
                     # Find nearest psychological level

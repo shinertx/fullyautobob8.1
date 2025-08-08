@@ -7,6 +7,7 @@ High-frequency updates, beautiful charts, comprehensive monitoring
 import asyncio
 import json
 import sqlite3
+import os
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import uvicorn
@@ -15,6 +16,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -150,7 +155,7 @@ class TradingDashboard:
             
             # Get latest system state
             cursor.execute("""
-                SELECT equity, total_pnl, daily_pnl, win_rate, last_update
+                SELECT equity, cash, total_pnl, daily_pnl, win_rate, last_update
                 FROM system_state ORDER BY last_update DESC LIMIT 1
             """)
             state = cursor.fetchone()
@@ -178,7 +183,7 @@ class TradingDashboard:
             patterns_count = cursor.fetchone()
             
             # Calculate performance metrics
-            initial_capital = 200.0
+            initial_capital = float(os.getenv("INITIAL_CAPITAL", 200.0))
             current_equity = state['equity'] if state else initial_capital
             total_pnl = state['total_pnl'] if state else 0
             roi = ((current_equity / initial_capital) - 1) * 100
@@ -195,21 +200,22 @@ class TradingDashboard:
             
             return {
                 "equity": current_equity,
+                "cash": state[1] if state and len(state) > 1 else 0,  # cash is second column
                 "total_pnl": total_pnl,
-                "daily_pnl": state['daily_pnl'] if state else 0,
+                "daily_pnl": state[3] if state and len(state) > 3 else 0,  # daily_pnl is fourth column
                 "roi_percent": roi,
-                "win_rate": state['win_rate'] if state else 0,
-                "trades_today": trades_today['trades_today'] if trades_today else 0,
-                "wins_today": trades_today['wins_today'] if trades_today else 0,
-                "active_strategies": active_strategies['active_strategies'] if active_strategies else 0,
-                "total_patterns": patterns_count['total_patterns'] if patterns_count else 0,
+                "win_rate": state[4] if state and len(state) > 4 else 0,  # win_rate is fifth column
+                "trades_today": trades_today[0] if trades_today else 0,
+                "wins_today": trades_today[1] if trades_today else 0,
+                "active_strategies": active_strategies[0] if active_strategies else 0,
+                "total_patterns": patterns_count[0] if patterns_count else 0,
                 "days_running": days_running,
                 "days_remaining": days_remaining,
                 "daily_return_avg": daily_return,
                 "required_daily_return": required_daily_return,
                 "target_equity": target_equity,
                 "initial_capital": initial_capital,
-                "last_update": state['last_update'] if state else datetime.utcnow().isoformat()
+                "last_update": state[5] if state and len(state) > 5 else datetime.utcnow().isoformat()
             }
         
         except Exception as e:
