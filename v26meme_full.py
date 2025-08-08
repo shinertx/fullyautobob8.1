@@ -133,6 +133,11 @@ class Config:
     MIN_CONF_ACTIVE = float(os.getenv("MIN_CONF_ACTIVE", 0.40))
     PAPER_EXPLORATION_PROB = float(os.getenv("PAPER_EXPLORATION_PROB", 0.01))
 
+    # Exploration / probing (paper-mode)
+    EXPLORATION_EPS = float(os.getenv("EXPLORATION_EPS", 0.03))  # fraction of inert signals to probe
+    PROBE_SIZE_PAPER = float(os.getenv("PROBE_SIZE_PAPER", 15.0))  # $ per probe trade
+    PROBE_MAX_SPREAD_BPS = float(os.getenv("PROBE_MAX_SPREAD_BPS", 40.0))  # require tight spread
+
     # Promotion thresholds (env-overridable)
     BOOTSTRAP_PROMOTION = os.getenv("BOOTSTRAP_PROMOTION", "true").lower() == "true"
     PROMOTE_PAPER_MIN_TRADES = int(os.getenv("PROMOTE_PAPER_MIN_TRADES", 10))
@@ -262,18 +267,19 @@ def is_sane_ticker(symbol: str) -> bool:
     """Check if a ticker symbol is valid for trading."""
     if not symbol or '/' not in symbol:
         return False
-    
-    # Avoid test/delisted tokens
+
+    s = symbol.upper()
+    # Avoid test/delisted/leveraged tokens
     blacklist = ['DEMO', 'DOWN', 'UP', 'BULL', 'BEAR', '2S', '2L', '3S', '3L']
-    for term in blacklist:
-        if term in symbol.upper():
-            return False
-    
-    # Must be against major stablecoins or BTC/ETH
-    valid_quotes = ['USDT', 'USDC', 'BUSD', 'BTC', 'ETH', 'BNB']
-    quote = symbol.split('/')[1]
-    
-    return quote in valid_quotes
+    if any(term in s for term in blacklist):
+        return False
+
+    quote = s.split('/')[-1]
+    # Use env-configured quotes + a small set of majors (future‑proof)
+    allowed_quotes = {q.strip().upper() for q in Config.ALLOWED_QUOTES} | {
+        'USDT','USDC','USD','EUR','DAI','TUSD','USDP','FDUSD','EURC','BTC','ETH'
+    }
+    return quote in allowed_quotes
 
 def calculate_kelly_position(
     win_rate: float,
@@ -2856,6 +2862,9 @@ class AutonomousTrader:
                 log.warning("⚠️ No patterns available yet - seeding baselines and generating")
                 await self._seed_baselines()
                 await self.strategy_engine._generate_new_strategies_from_patterns(self.state)
+
+        # Ensure at least one actionable strategy exists
+        await self._install_builtin_strategies()
         
         # Determine initial mode based on configuration
         if os.getenv('TRADING_MODE') == 'LIVE':
@@ -2882,6 +2891,57 @@ class AutonomousTrader:
                 await self.learning_memory.save_pattern(p)
             except Exception as e:
                 log.warning(f"Seed pattern failed: {e}")
+
+    async def _install_builtin_strategies(self):
+        """Ensure at least one actionable PAPER strategy exists."""
+        existing = [s for s in self.state.strategies.values() if s.status != StrategyStatus.RETIRED]
+        if existing and any(s.total_trades > 0 for s in existing):
+            return
+
+        code = '''
+async def execute_strategy(state, opp):
+    """
+    Baseline momentum breakout that works on ANY symbol.
+    Triggers on strong 24h move with adequate liquidity & tight spread.
+    """
+    try:
+        symbol = safe_get(opp,'symbol','')
+        price = float(safe_get(opp,'current_price', 0))
+        vol = float(safe_get(opp,'volume_24h', 0))
+        chg = float(safe_get(opp,'change_24h', 0))
+        spread = float(safe_get(opp,'spread_bps', 9999))
+        if price <= 0 or vol < 20000 or spread > 40:
+            return {'action':'hold','conf':0.0, 'reason':'filters'}
+
+        magnitude = abs(chg)
+        if magnitude < 1.5:  # require at least ±1.5% 24h move
+            return {'action':'hold','conf':0.0, 'reason':'magnitude<1.5%'}
+
+        action = 'buy' if chg > 0 else 'sell'
+        conf = max(0.2, min(0.8, magnitude/5.0))  # 1.5%→0.3, 4%→0.8
+        sl = price * (0.985 if action=='buy' else 1.015)
+        tp = price * (1.02 if action=='buy' else 0.98)
+
+        return {'action': action, 'conf': conf, 'sl': sl, 'tp': tp,
+                'reason': f'baseline breakout chg={chg:.2f}% vol=${vol:,.0f} spread={spread:.1f}bps'}
+    except Exception as e:
+        return {'action':'hold','conf':0.0,'reason':str(e)}
+'''
+        strat = Strategy(
+            id=hashlib.sha256(f"builtin_baseline_{time.time()}".encode()).hexdigest()[:16],
+            name="BaselineBreakout_v1",
+            description="Built-in symbol-agnostic momentum breakout.",
+            code=code,
+            status=StrategyStatus.PAPER,
+            pattern_id="builtin",
+            generation=1,
+            max_position_pct=0.02,
+            stop_loss=0.015,
+            take_profit=0.02
+        )
+        self.state.strategies[strat.id] = strat
+        await self.db.save_strategy(strat)
+        log.info("🌱 Installed builtin strategy: BaselineBreakout_v1")
         
     async def run(self):
         """Main trading loop - the heart of the autonomous system."""
