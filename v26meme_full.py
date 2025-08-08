@@ -464,7 +464,7 @@ class Database:
                 current_price REAL,
                 pnl REAL,
                 pnl_pct REAL,
-                opened_at TIMESTAMP,
+                opened_at TEXT,
                 stop_loss REAL,
                 take_profit REAL
             )
@@ -482,7 +482,7 @@ class Database:
 
         self.conn.commit()
         
-        # Create current_positions table for dashboard
+        # Create current_positions table for dashboard/state sync
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS current_positions (
                 id TEXT PRIMARY KEY,
@@ -1801,7 +1801,7 @@ class PatternDiscoveryEngine:
                         if not sym or '/' not in sym or not m.get('active') or not is_sane_ticker(sym):
                             continue
                         quote = m.get('quote') or (sym.split('/')[-1] if '/' in sym else '')
-                        if quote not in ('USD','USDC','EUR'):
+                                                                      if quote not in ('USD','USDC','EUR'):
                             continue
                         try:
                             tickers[sym] = await exchange.fetch_ticker(sym)
@@ -2333,9 +2333,10 @@ class AdaptiveStrategyEngine:
             
             entry_logic.append(f"# Detect volume anomalies in current symbol")
             entry_logic.append(f"volume_24h = safe_get(opp, 'volume_24h', 0)")
-            entry_logic.append(f"change_24h = safe_get(opp, 'change_24h', 0)")
+            entry_logic.append(f"change_24h = safe_get(opp, 'change_24h', 0)")  # percent units (e.g., 2.5 for 2.5%)
             entry_logic.append(f"# Look for volume spikes with momentum")
-            entry_logic.append(f"volume_momentum_signal = abs(change_24h) > 0.05 and volume_24h > 50000")
+            # Use percent thresholds, not fractions
+            entry_logic.append(f"volume_momentum_signal = abs(change_24h) > 3.0 and volume_24h > 50000")
             
             risk_params['stop_loss'] = 0.02
             risk_params['take_profit'] = abs(pattern.get('avg_subsequent_return', 0.03))
@@ -2347,7 +2348,7 @@ class AdaptiveStrategyEngine:
             pattern_details.append(f"Sharpe ratio: {pattern.get('sharpe_ratio', 1.0):.2f}")
             
             entry_logic.append(f"# Time-based pattern - works for any symbol")
-            entry_logic.append(f"from datetime import datetime")
+            # DO NOT import inside strategy; sandbox blocks imports. Use injected datetime.
             entry_logic.append(f"current_hour = datetime.utcnow().hour")
             entry_logic.append(f"time_match = current_hour == {hour}")
             entry_logic.append(f"# Additional filters for any symbol")
@@ -2379,14 +2380,17 @@ class AdaptiveStrategyEngine:
             pattern_details.append(f"Win rate: {pattern.get('win_rate', 0.65):.1%}")
             
             entry_logic.append(f"# Order book imbalance - use available market data")
-            entry_logic.append(f"change_24h = safe_get(opp, 'change_24h', 0)")
+            entry_logic.append(f"change_24h = safe_get(opp, 'change_24h', 0)")  # percent units
             entry_logic.append(f"volume_24h = safe_get(opp, 'volume_24h', 0)")
             entry_logic.append(f"# Use volume and price movement as proxy for imbalance")
-            entry_logic.append(f"momentum_signal = abs(change_24h) > 0.02 and volume_24h > 25000")
+            # Use percent threshold
+            entry_logic.append(f"momentum_signal = abs(change_24h) > 2.0 and volume_24h > 25000")
             entry_logic.append(f"imbalance_detected = momentum_signal and change_24h > 0")
             
             risk_params['stop_loss'] = 0.025
-            risk_params['take_profit'] = pattern.get('avg_return', 0.02)        # Build the complete prompt - EMPHASIZE SYMBOL-AGNOSTIC
+            risk_params['take_profit'] = pattern.get('avg_return', 0.02)
+            
+        # Build the complete prompt - EMPHASIZE SYMBOL-AGNOSTIC
         prompt = f"""
 Generate a complete async Python trading strategy function based on this discovered pattern.
 
@@ -2767,7 +2771,7 @@ def _detect_psychological_level_proximity(price: float) -> bool:
     
     # Define key psychological levels
     levels = [0.01, 0.05, 0.10, 0.25, 0.50, 0.99, 1.00, 5.00, 9.99, 10.00, 
-              25.00, 50.00, 99.00, 100.00, 250.00, 500.00, 999.00, 1000.00]
+              25.00, 50.00, 99.00, 100.00, 250.00, 500.00, 999.00, 1000.00, 10000.00]
     
     for level in levels:
         # Check if price is within 2% of the level
@@ -3063,10 +3067,6 @@ async def execute_strategy(state, opp):
                     await exchange.load_markets()
                 except Exception:
                     pass
-                return await exchange.fetch_tickers()
-            except Exception as primary_error:
-                log.warning(f"{exchange_name} fetch_tickers failed ({primary_error}); falling back to per-symbol fetch")
-                try:
                     try:
                         markets = await exchange.fetch_markets()
                         candidate_symbols = [m.get('symbol') for m in markets if m.get('active') and isinstance(m.get('symbol'), str) and '/' in m.get('symbol','')]
