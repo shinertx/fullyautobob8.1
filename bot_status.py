@@ -45,7 +45,7 @@ def get_env_summary():
         "initial_capital": os.getenv("INITIAL_CAPITAL", "200"),
         "max_position_pct": os.getenv("MAX_POSITION_PCT", "0.02"),
         "log_level": os.getenv("LOG_LEVEL", "DEBUG"),
-        "web_port": os.getenv("WEB_PORT", "8000"),
+        "web_port": os.getenv("WEB_PORT", "8080"),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
         "coinbase_configured": bool(os.getenv("COINBASE_API_KEY"))
     }
@@ -112,7 +112,7 @@ def main():
     print("\n🚀 Quick Actions:")
     if status["running"]:
         print("   • View logs: tail -f v26meme.log")
-        print("   • Web dashboard: http://localhost:8000")
+        print("   • Web dashboard: http://localhost:8080")
         print("   • Stop bot: kill <PID>")
     else:
         print("   • Start bot: python3 v26meme_full.py")

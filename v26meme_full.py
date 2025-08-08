@@ -125,6 +125,11 @@ class Config:
     RISK_GUARDIAN = os.getenv("RISK_GUARDIAN", "true").lower() == "true"
     DISCOVERY_DISABLE_ON = set([s.strip() for s in os.getenv("DISCOVERY_DISABLE_ON", "").split(",") if s.strip()])
 
+    # Simulation Lab (parallel replay) – safe defaults
+    SIMLAB_ENABLED = os.getenv("SIMLAB_ENABLED", "true").lower() == "true"
+    SIMLAB_DATA_DIR = os.getenv("SIMLAB_DATA_DIR", "data")
+    SIMLAB_CONCURRENCY = int(os.getenv("SIMLAB_CONCURRENCY", "2"))
+
     # Liquidity Filters (env-overridable)
     ALLOWED_QUOTES = set([s.strip() for s in os.getenv("ALLOWED_QUOTES", "USD,USDC,EUR").split(",") if s.strip()])
     MIN_VOLUME_USD_PAPER = float(os.getenv("MIN_VOLUME_USD_PAPER", 5000))
@@ -2926,6 +2931,27 @@ class AutonomousTrader:
         else:
             self.state.mode = TradingMode.PAPER
             log.info("📝 Paper trading mode - No real money at risk")
+        
+        # Initialize SimLab (parallel simulation engine)
+        try:
+            from simlab import SimLab
+            # Reuse your existing runner and strategy registry without coupling:
+            async def _run_strategy_wrapper(strategy, opp):
+                # reuse your robust sandbox executor
+                return await self._run_strategy_code(strategy, opp)
+
+            def _fetch_strategies():
+                return {sid: s for sid, s in self.state.strategies.items() if s.status != StrategyStatus.RETIRED}
+
+            self.simlab = SimLab(
+                db_path=self.db.db_path,
+                run_strategy_callable=_run_strategy_wrapper,
+                fetch_strategies_callable=_fetch_strategies,
+                logger=log
+            )
+            await self.simlab.start_background()
+        except Exception as e:
+            log.error(f"SimLab failed to start: {e}")
         
         return True
 

@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 """
-Simple v26meme Trading Dashboard - Real-time data display
+v26meme Trading Dashboard - Professional Real-time Monitoring Interface
+
+Features:
+- Live equity and P&L tracking
+- Open positions monitoring
+- Strategy performance analysis
+- Pattern discovery visualization
+- Real-time data updates every 5 seconds
 """
 
 import sqlite3

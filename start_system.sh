@@ -1,5 +1,5 @@
 #!/bin/bash
-# v26meme Trading System Launcher
+# v26meme Tr  echo "🌐 Starting Web Dashboard on http://localhost:8080"ding System Launcher
 # Starts both the trading bot and web dashboard
 
 set -e
@@ -21,12 +21,12 @@ if [ ! -f "v26meme.db" ]; then
     echo "📚 Creating new database..."
 fi
 
-if [ -f "web_dashboard.py" ]; then
-  echo "🌐 Starting Web Dashboard on http://localhost:8000"
-  python web_dashboard.py &
+if [ -f "dashboard.py" ]; then
+  echo "🌐 Starting Trading Dashboard on http://localhost:8080"
+  python dashboard.py &
   DASHBOARD_PID=$!
 else
-  echo "ℹ️ Dashboard not found (web_dashboard.py). Skipping dashboard startup."
+  echo "ℹ️ Dashboard not found (dashboard.py). Skipping dashboard startup."
   DASHBOARD_PID=""
 fi
 
@@ -49,7 +49,7 @@ BOT_LOOP_PID=$!
 
 echo ""
 echo "✅ System started successfully!"
-echo "📊 Dashboard: http://localhost:8000"
+echo "📊 Dashboard: http://localhost:8080"
 echo "🤖 Bot Loop Process ID: $BOT_LOOP_PID"
 if [ -n "$DASHBOARD_PID" ]; then
   echo "🌐 Dashboard Process ID: $DASHBOARD_PID"
