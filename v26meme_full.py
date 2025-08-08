@@ -2230,7 +2230,8 @@ class AdaptiveStrategyEngine:
 
                 # Phase-based thresholds
                 if phase == "Discovery":
-                    min_pnl, min_sharpe, min_wr = 0.0, 0.3, 0.52
+                    # Lenient gate in Discovery to let PAPER learn
+                    min_pnl, min_sharpe, min_wr = 0.0, 0.0, 0.50
                 elif phase == "Optimization":
                     min_pnl, min_sharpe, min_wr = 5.0, 0.8, 0.55
                 else:
@@ -2771,6 +2772,11 @@ class AutonomousTrader:
         self.ai_manager = None
         self.running = False
         self.tasks = []
+        # Per-exchange concurrency control to avoid 429s
+        from collections import defaultdict
+        self._sem = defaultdict(lambda: asyncio.Semaphore(6))
+        # Cooldown window when daily loss breached
+        self._cooldown_until: Optional[datetime] = None
         
     async def initialize(self):
         """Initialize all components of the trading system."""
@@ -2944,7 +2950,7 @@ class AutonomousTrader:
                 if loop_time > 5:
                     log.warning(f"⏱️ Trading loop took {loop_time:.1f}s (target: 5s)")
                 
-                await asyncio.sleep(max(0, 5 - loop_time))  # Maintain 5s frequency
+                await asyncio.sleep(max(0, 12 - loop_time))  # Maintain ~12s frequency to reduce 429s
                 
             except Exception as e:
                 log.error(f"Trading loop error: {e}")
@@ -2990,7 +2996,8 @@ class AutonomousTrader:
         # Fetch tickers in parallel for all exchanges
         async def fetch_exchange_tickers(name, ex):
             log.info(f"🔍 Scanning {name} for opportunities...")
-            data = await _fetch_tickers_safe(name, ex)
+                async with self._sem[name]:
+                    data = await _fetch_tickers_safe(name, ex)
             if data:
                 return name, data, None
             return name, None, RuntimeError("no tickers")
@@ -3066,7 +3073,8 @@ class AutonomousTrader:
                 depth_ok = True
                 if Config.CHECK_ORDERBOOK_DEPTH and exchange_name in self.exchanges and getattr(self.exchanges[exchange_name], 'has', {}).get('fetchOrderBook'):
                     try:
-                        ob = await self.exchanges[exchange_name].fetch_order_book(symbol, limit=5)
+                        async with self._sem[exchange_name]:
+                            ob = await self.exchanges[exchange_name].fetch_order_book(symbol, limit=5)
                         top5_bid_usd = sum([(b[0]*b[1]) for b in (ob.get('bids') or [])[:5]])
                         top5_ask_usd = sum([(a[0]*a[1]) for a in (ob.get('asks') or [])[:5]])
                         depth_ok = (top5_bid_usd >= Config.MIN_OB_DEPTH_USD and top5_ask_usd >= Config.MIN_OB_DEPTH_USD)
@@ -3075,15 +3083,15 @@ class AutonomousTrader:
 
                 if _to_float(volume_usd, 0.0) >= min_vol and change_pct_abs > 0.5 and spread_bps <= Config.MAX_SPREAD_BPS and depth_ok:
                     exchange_filtered += 1
-                    opportunities.append({
+                    opp = {
                         'symbol': symbol,
                         'exchange': exchange_name,
                         'price': _to_float(ticker.get('last'), 0.0),
-                        'volume': _to_float(volume_usd, 0.0),
-                        'change_24h': _to_float(change_pct, 0.0),
+                        'volume_24h_usd': _to_float(volume_usd, 0.0),
+                        'change_24h_pct': _to_float(change_pct, 0.0),
                         'bid': _to_float(ticker.get('bid'), 0.0),
                         'ask': _to_float(ticker.get('ask'), 0.0),
-                        'spread': ((_to_float(ticker.get('ask'), 0.0) - _to_float(ticker.get('bid'), 0.0)) / _to_float(ticker.get('last'), 1.0)) if _to_float(ticker.get('last'), 0.0) > 0 else 0.0,
+                        'spread_bps': ((_to_float(ticker.get('ask'), 0.0) - _to_float(ticker.get('bid'), 0.0)) / _to_float(ticker.get('last'), 1.0) * 10000.0) if _to_float(ticker.get('last'), 0.0) > 0 else 99999.0,
                         'timestamp': datetime.utcnow(),
                         'current_price': _to_float(ticker.get('last'), 0.0),
                         'volume_24h': _to_float(volume_usd, 0.0),
@@ -3091,14 +3099,18 @@ class AutonomousTrader:
                         'low_24h': _to_float(ticker.get('low', ticker.get('last')), 0.0),
                         'open_24h': _to_float(ticker.get('open', ticker.get('last')), 0.0),
                         'vwap': _to_float(ticker.get('vwap', ticker.get('last')), 0.0)
-                    })
+                    }
+                    # Back-compat fields for existing strategies
+                    opp['volume'] = opp['volume_24h_usd']
+                    opp['change_24h'] = opp['change_24h_pct']
+                    opportunities.append(opp)
 
             filtered_count += exchange_filtered
             log.info(f"✅ Filtered {exchange_filtered} opportunities from {exchange_name} (volume > $5k AND change > 0.5%)")
 
         # Sort by opportunity score (volume * volatility)
         opportunities.sort(
-            key=lambda x: float(x.get('volume', 0.0)) * abs(float(x.get('change_24h', 0.0))),
+            key=lambda x: float(x.get('volume_24h_usd', x.get('volume', 0.0))) * abs(float(x.get('change_24h_pct', x.get('change_24h', 0.0)))),
             reverse=True
         )
         
@@ -3304,6 +3316,10 @@ class AutonomousTrader:
         decision_sl = decision.get('sl')
         decision_tp = decision.get('tp')
         
+        # Cooldown check (Risk Guardian v2)
+        if self._cooldown_until and datetime.utcnow() < self._cooldown_until:
+            return
+
         # AGGRESSIVE confidence thresholds for moonshot goal
         if strategy.status == StrategyStatus.PAPER:
             min_confidence = 0.20  # Very low threshold to start testing
@@ -3313,7 +3329,7 @@ class AutonomousTrader:
             position_size = min(100, self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct))
         else:  # ACTIVE
             min_confidence = 0.40  # Aggressive for proven strategies
-            # Use larger position sizes for moonshot
+            # Use larger position sizes for moonshot with bandit weighting
             if strategy.win_rate > 0.5 and strategy.avg_profit > 0:
                 kelly_size = calculate_kelly_position(
                     strategy.win_rate,
@@ -3327,7 +3343,14 @@ class AutonomousTrader:
                     position_multiplier = float(getattr(strategy, 'position_multiplier', 1.0) or 1.0)
                 except Exception:
                     position_multiplier = 1.0
-                position_size = self.state.equity * kelly_size * position_multiplier
+                # Thompson Sampling bandit weight
+                try:
+                    alpha = strategy.winning_trades + 1
+                    beta = (strategy.total_trades - strategy.winning_trades) + 1
+                    bandit_weight = np.random.beta(alpha, beta)
+                except Exception:
+                    bandit_weight = 1.0
+                position_size = self.state.equity * kelly_size * position_multiplier * (0.5 + bandit_weight)
             else:
                 position_size = self.state.equity * min(0.08, Config.MAX_POSITION_SIZE)
         
@@ -3701,7 +3724,9 @@ class AutonomousTrader:
         baseline = max(self.state.equity_start_of_day, 1e-9)
         daily_drawdown = (self.state.equity - baseline) / baseline
         if daily_drawdown <= -max_daily_loss_cfg:
-            log.warning(f"⚠️ Daily loss limit hit: ${self.state.daily_pnl:.2f}")
+            log.warning(f"⚠️ Daily loss limit hit: ${self.state.daily_pnl:.2f} - entering 24h cooldown")
+            from datetime import timedelta
+            self._cooldown_until = datetime.utcnow() + timedelta(hours=24)
             return True
         
         # Legacy behavior: also trip if daily_pnl breaches threshold vs current equity
