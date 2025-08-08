@@ -1511,9 +1511,9 @@ class PatternDiscoveryEngine:
                                     rejection_rate = results.count('rejection') / len([r for r in results if r in ['breakthrough', 'rejection']]) if 'rejection' in results or 'breakthrough' in results else 0
                                     support_rate = results.count('support') / len([r for r in results if r in ['breakdown', 'support']]) if 'support' in results or 'breakdown' in results else 0
 
-                                     pattern = {
-                                         'type': 'psychological_level',
-                                         'level': float(nearest_level),
+                                    pattern = {
+                                        'type': 'psychological_level',
+                                        'level': float(nearest_level),
                                         'current_price': float(current_price),
                                         'rejection_rate': float(rejection_rate),
                                         'support_rate': float(support_rate),
