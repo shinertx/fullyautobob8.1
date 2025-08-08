@@ -2237,7 +2237,10 @@ class AdaptiveStrategyEngine:
                 else:
                     min_pnl, min_sharpe, min_wr = 10.0, 1.0, 0.58
 
-                if not (metrics.get('sharpe_like', 0) >= min_sharpe and metrics.get('win_rate', 0) >= min_wr):
+                gate_ok = (metrics.get('sharpe_like', 0) >= min_sharpe and metrics.get('win_rate', 0) >= min_wr)
+                if phase == "Discovery":
+                    gate_ok = True
+                if not gate_ok:
                     log.info(
                         f"🧪 Rejected strategy (pre-gate) PnL={metrics.get('pnl',0):.2f}, "
                         f"Sharpe~={metrics.get('sharpe_like',0):.2f}, WR={metrics.get('win_rate',0):.1%}"
@@ -2843,7 +2846,9 @@ class AutonomousTrader:
                     await self.db.save_strategy(strategy)
                 log.info(f"✅ Generated {len(self.state.strategies)} initial strategies")
             else:
-                log.warning("⚠️ No patterns available yet - will generate after discovery")
+                log.warning("⚠️ No patterns available yet - seeding baselines and generating")
+                await self._seed_baselines()
+                await self.strategy_engine._generate_new_strategies_from_patterns(self.state)
         
         # Determine initial mode based on configuration
         if os.getenv('TRADING_MODE') == 'LIVE':
@@ -2854,6 +2859,22 @@ class AutonomousTrader:
             log.info("📝 Paper trading mode - No real money at risk")
         
         return True
+
+    async def _seed_baselines(self):
+        """Seed a few generic patterns so CodeGen can start from zero."""
+        seeds = [
+            {'id':'seed_momo','type':'volume_spike_momentum','symbol':'ALL','exchange':'ALL',
+             'description':'Volume>2x with positive price impulse; hold 1h','confidence':0.55,'win_rate':0.55,'avg_return':0.01,'sample_size':0},
+            {'id':'seed_meanrev','type':'mean_reversion','symbol':'ALL','exchange':'ALL',
+             'description':'2-sigma deviation reverts to mean','confidence':0.55,'win_rate':0.56,'avg_return':0.008,'sample_size':0},
+            {'id':'seed_time','type':'time_of_day','symbol':'ALL','exchange':'ALL',
+             'description':'Hour-of-day drift on liquid pairs','confidence':0.52,'win_rate':0.53,'avg_return':0.004,'sample_size':0},
+        ]
+        for p in seeds:
+            try:
+                await self.learning_memory.save_pattern(p)
+            except Exception as e:
+                log.warning(f"Seed pattern failed: {e}")
         
     async def run(self):
         """Main trading loop - the heart of the autonomous system."""
@@ -3417,9 +3438,27 @@ class AutonomousTrader:
             log.debug("Correlation cap: too many positions in same base")
             return
         
+        # Price floor
+        if opp.get('price', 0.0) and opp['price'] < 0.05:
+            return
+
+        # Quote exposure cap (<=30% equity per quote)
+        try:
+            base, quote = opp['symbol'].split('/')
+        except Exception:
+            base, quote = opp['symbol'], ''
+        if quote:
+            quote_exposure = sum(
+                p.amount * p.current_price for p in self.state.positions.values() if p.symbol.endswith(f"/{quote}")
+            )
+            if (quote_exposure + size) > (0.30 * self.state.equity):
+                return
+
         # Enforce caps and cash
         max_cap = self.state.equity * min(Config.MAX_POSITION_SIZE, strategy.max_position_pct)
-        size = min(size, max_cap, self.state.cash)
+        # Per-asset phase cap
+        phase_cap = 0.02 if self.state.mode == TradingMode.MICRO else 0.08
+        size = min(size, max_cap, self.state.cash, self.state.equity * phase_cap)
         
         if size < Config.MIN_TRADE_SIZE:
             log.debug(f"Position size ${size:.2f} below minimum")
