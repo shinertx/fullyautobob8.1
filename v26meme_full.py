@@ -3388,6 +3388,18 @@ class AutonomousTrader:
             # Exploration: in PAPER mode, occasionally take tiny probes
             if self.state.mode == TradingMode.PAPER and random.random() < Config.PAPER_EXPLORATION_PROB:
                 log.info("🧪 Exploration trade in PAPER mode")
+                # If strategy returned hold, convert to a small directional probe
+                if action in (None, 'hold'):
+                    # Simple heuristic: buy dips, else random
+                    change_pct = opp.get('change_24h_pct', opp.get('change_24h', 0.0)) or 0.0
+                    action = 'buy' if change_pct <= 0 else ('buy' if random.random() < 0.5 else 'sell')
+                # Use a smaller paper probe size
+                position_size = min(25, self.state.equity * 0.01)
+                # Provide default SL/TP if none
+                if decision_sl is None:
+                    decision_sl = opp['price'] * (0.98 if action == 'buy' else 1.02)
+                if decision_tp is None:
+                    decision_tp = opp['price'] * (1.02 if action == 'buy' else 0.98)
             else:
                 log.debug(f"❌ Confidence {confidence:.2f} below threshold {min_confidence:.2f}")
                 return
