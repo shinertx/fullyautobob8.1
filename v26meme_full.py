@@ -2857,6 +2857,9 @@ class AutonomousTrader:
     async def initialize(self):
         """Initialize all components of the trading system."""
         log.info("🚀 Initializing v26meme Autonomous Trading System...")
+
+        # Connect to database
+        await self.db.connect()
         
         # Initialize AI manager
         if Config.OPENAI_API_KEY:

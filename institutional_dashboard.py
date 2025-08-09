@@ -21,6 +21,7 @@ import json
 import sqlite3
 import os
 import math
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 import uvicorn
@@ -175,7 +176,7 @@ class InstitutionalDashboard:
                         return None
                     return math.sqrt(self.S / (self.k - 1))
 
-            conn.create_aggregate("stdev", 1, StdevFunc)
+            conn.create_aggregate("stdev", 1, StdevFunc)  # type: ignore  # type: ignore  # type: ignore  # type: ignore  # type: ignore
             return conn
         except Exception as e:
             log.error(f"Database connection error: {e}")
@@ -1249,7 +1250,38 @@ class InstitutionalDashboard:
 dashboard = InstitutionalDashboard()
 app = dashboard.app
 
+def wait_for_db(db_path: str):
+    """Wait for the database to be created and initialized."""
+    log.info("⏳ Waiting for database to be initialized by the main bot...")
+    while True:
+        try:
+            if os.path.exists(db_path):
+                # Use a timeout and read-only mode to avoid locking issues if the bot is writing
+                conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True, timeout=1.0)
+                cursor = conn.cursor()
+                # Check if a key table exists (e.g., system_state)
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='system_state'")
+                if cursor.fetchone():
+                    log.info("✅ Database and key tables are ready.")
+                    conn.close()
+                    break
+                conn.close()
+                log.info("DB file found, but key tables not yet created. Waiting...")
+            else:
+                log.info("Database file not found. Waiting for main bot to create it...")
+        except sqlite3.OperationalError as e:
+            # This can happen if the DB is locked, which is fine. We just wait.
+            log.info(f"DB is busy or not ready yet, waiting... Error: {e}")
+        except Exception as e:
+            log.error(f"An unexpected error occurred while waiting for DB: {e}")
+        
+        time.sleep(5)
+
+
 if __name__ == "__main__":
+    db_file = os.getenv("DB_PATH", "v26meme.db")
+    wait_for_db(db_file)
+
     log.info("🏛️ Starting v26meme Institutional Trading Dashboard...")
     log.info("📊 Professional quantitative fund interface initializing...")
     log.info("🚀 Dashboard will be available at: http://localhost:8080")

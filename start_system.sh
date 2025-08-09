@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # v26meme Trading System Launcher
 # Starts both the trading bot and web dashboard
@@ -34,17 +35,34 @@ echo "⏱️  Waiting 3 seconds for dashboard to start..."
 sleep 3
 
 echo "🤖 Starting Trading Bot"
-export TRADING_MODE=${TRADING_MODE:-PAPER}
-# Add a loop to keep the bot running
-while true; do
-    echo "🔄 Starting/Restarting trading bot..."
-    /usr/bin/python3 -u v26meme_full.py > v26meme_full.log 2>&1 &
-    BOT_PID=$!
-    echo "🤖 Bot started with PID: $BOT_PID"
-    wait $BOT_PID
-    echo "⚠️ Bot process stopped. Restarting in 5 seconds..."
-    sleep 5
-done &
+# The bot needs to start first to create the database schema
+/usr/bin/python3 -u v26meme_full.py > v26meme_full.log 2>&1 &
+BOT_PID=$!
+echo "🤖 Bot started with PID: $BOT_PID"
+
+echo "⏱️  Waiting 5 seconds for bot to initialize database..."
+sleep 5
+
+if [ -f "institutional_dashboard.py" ]; then
+  echo "🏛️ Starting Institutional Trading Dashboard on http://localhost:8080"
+  nohup /usr/bin/python3 -u institutional_dashboard.py > institutional_dashboard.log 2>&1 &
+  DASHBOARD_PID=$!
+else
+  echo "❌ Institutional dashboard not found (institutional_dashboard.py). Skipping dashboard startup."
+  DASHBOARD_PID=""
+fi
+
+# Monitor the bot and restart if it crashes
+(
+  while true; do
+      wait $BOT_PID
+      echo "⚠️ Bot process stopped. Restarting in 5 seconds..."
+      sleep 5
+      /usr/bin/python3 -u v26meme_full.py > v26meme_full.log 2>&1 &
+      BOT_PID=$!
+      echo "🤖 Bot restarted with PID: $BOT_PID"
+  done
+) &
 BOT_LOOP_PID=$!
 
 echo ""
