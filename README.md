@@ -227,6 +227,36 @@ python3 tools/data_fetcher.py --timeframes 5m 15m 1h --days 60
 
 📖 **Full Documentation**: See [SIMLAB_README.md](SIMLAB_README.md)
 
+## 🏛️ Institutional Trading Dashboard
+
+**Professional quantitative fund monitoring with institutional-grade analytics**
+
+### 🚀 **Quick Start**
+```bash
+# Start the complete trading system
+./start_system.sh
+
+# Or start components individually
+python3 v26meme_full.py      # Trading bot
+python3 institutional_dashboard.py  # Dashboard
+```
+
+### 📊 **Access Your Command Center**
+- **🏛️ Institutional Dashboard**: http://localhost:8080
+- **📈 Real-time Analytics**: WebSocket streaming, <100ms latency
+- **🔧 API Documentation**: http://localhost:8080/docs
+- **💡 Health Monitoring**: http://localhost:8080/health
+
+### 🎯 **Professional Features**
+- **Real-Time Portfolio NAV**: Live equity curve with risk metrics
+- **SimLab Integration**: 879+ completed simulations, 99K+ analyzed trades
+- **Institutional Analytics**: Sharpe ratio, VaR, maximum drawdown
+- **Strategy Performance**: Individual strategy P&L attribution
+- **Risk Management**: Real-time position monitoring and concentration limits
+- **Professional UI**: Dark theme, responsive design, multi-device support
+
+📖 **Complete Documentation**: See [DASHBOARD.md](DASHBOARD.md)
+
 ## 🚀 After The First Million
 
 The bot doesn't stop at $1M. With proven strategies:

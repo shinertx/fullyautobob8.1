@@ -6,3 +6,9 @@ pandas
 requests
 websockets
 aiohttp
+fastapi
+uvicorn[standard]
+rich
+nest_asyncio
+scipy
+psutil

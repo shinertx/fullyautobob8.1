@@ -1,5 +1,5 @@
 #!/bin/bash
-# v26meme Tr  echo "🌐 Starting Web Dashboard on http://localhost:8080"ding System Launcher
+# v26meme Trading System Launcher
 # Starts both the trading bot and web dashboard
 
 set -e
@@ -8,25 +8,25 @@ echo "🚀 Starting v26meme Trading System"
 echo "=================================="
 
 # Check if virtual environment exists
-if [ ! -d ".venv" ]; then
-    echo "❌ Virtual environment not found. Please run setup first."
-    exit 1
-fi
+# if [ ! -d ".venv" ]; then
+#     echo "❌ Virtual environment not found. Please run setup first."
+#     exit 1
+# fi
 
 # Activate virtual environment
-source .venv/bin/activate
+# source .venv/bin/activate
 
 # Check if database exists
 if [ ! -f "v26meme.db" ]; then
     echo "📚 Creating new database..."
 fi
 
-if [ -f "dashboard.py" ]; then
-  echo "🌐 Starting Trading Dashboard on http://localhost:8080"
-  python dashboard.py &
+if [ -f "institutional_dashboard.py" ]; then
+  echo "🏛️ Starting Institutional Trading Dashboard on http://localhost:8080"
+  WEB_PORT=8080 python3 institutional_dashboard.py &
   DASHBOARD_PID=$!
 else
-  echo "ℹ️ Dashboard not found (dashboard.py). Skipping dashboard startup."
+  echo "❌ Institutional dashboard not found (institutional_dashboard.py). Skipping dashboard startup."
   DASHBOARD_PID=""
 fi
 
@@ -38,7 +38,7 @@ export TRADING_MODE=${TRADING_MODE:-PAPER}
 # Add a loop to keep the bot running
 while true; do
     echo "🔄 Starting/Restarting trading bot..."
-    python v26meme_full.py > v26meme_full.log 2>&1 &
+    python3 v26meme_full.py > v26meme_full.log 2>&1 &
     BOT_PID=$!
     echo "🤖 Bot started with PID: $BOT_PID"
     wait $BOT_PID
@@ -49,7 +49,7 @@ BOT_LOOP_PID=$!
 
 echo ""
 echo "✅ System started successfully!"
-echo "📊 Dashboard: http://localhost:8080"
+echo "🏛️ Institutional Dashboard: http://localhost:8080"
 echo "🤖 Bot Loop Process ID: $BOT_LOOP_PID"
 if [ -n "$DASHBOARD_PID" ]; then
   echo "🌐 Dashboard Process ID: $DASHBOARD_PID"

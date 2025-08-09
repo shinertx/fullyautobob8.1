@@ -39,6 +39,7 @@ import shutil
 import ccxt.async_support as ccxt
 import aiohttp
 import openai
+import aiosqlite # Use async-safe sqlite library
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
@@ -397,25 +398,56 @@ def inject_params(code: str, params: Dict[str, Any]) -> str:
     
     return code
 
+# Custom aggregate function for SQLite to calculate standard deviation
+class StdevFunc:
+    def __init__(self):
+        self.M = 0.0
+        self.S = 0.0
+        self.k = 0
+
+    def step(self, value):
+        if value is None:
+            return
+        try:
+            x = float(value)
+            k = self.k
+            self.k += 1
+            M_prev = self.M
+            self.M += (x - M_prev) / self.k
+            self.S += (x - M_prev) * (x - self.M)
+        except (ValueError, TypeError):
+            return
+
+    def finalize(self):
+        if self.k < 2:
+            return None
+        return math.sqrt(self.S / (self.k - 1))
+
 # ═══════════════════════════════ DATABASE ═══════════════════════════════
 
 class Database:
-    """SQLite database for persistent storage."""
+    """Async-safe SQLite database for persistent storage."""
     
     def __init__(self, db_path: str = Config.DB_PATH):
-        import sqlite3
         self.db_path = db_path
         self.conn = None
-        self._init_db()
+
+    async def connect(self):
+        """Establish async connection to the database."""
+        self.conn = await aiosqlite.connect(self.db_path)
+        await self.conn.create_aggregate("STDEV", 1, StdevFunc)
+        await self._init_db()
+
+    async def close(self):
+        """Close the database connection."""
+        if self.conn:
+            await self.conn.close()
     
-    def _init_db(self):
+    async def _init_db(self):
         """Initialize database tables."""
-        import sqlite3
-        self.conn = sqlite3.connect(self.db_path)
-        cursor = self.conn.cursor()
         
         # Patterns table
-        cursor.execute('''
+        await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS patterns (
                 id TEXT PRIMARY KEY,
                 type TEXT,
@@ -435,7 +467,7 @@ class Database:
         ''')
         
         # Strategies table - fixed schema
-        cursor.execute('''
+        await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS strategies (
                 id TEXT PRIMARY KEY,
                 name TEXT,
@@ -463,7 +495,7 @@ class Database:
         ''')
         
         # Trades table
-        cursor.execute('''
+        await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS trades (
                 id TEXT PRIMARY KEY,
                 strategy_id TEXT,
@@ -481,7 +513,7 @@ class Database:
         ''')
         
         # System state table - fixed schema
-        cursor.execute('''
+        await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS system_state (
                 id INTEGER PRIMARY KEY,
                 mode TEXT,
@@ -499,7 +531,7 @@ class Database:
         ''')
 
         # Current positions table for dashboard/state sync
-        cursor.execute('''
+        await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS current_positions (
                 id TEXT PRIMARY KEY,
                 strategy_id TEXT,
@@ -518,7 +550,7 @@ class Database:
         ''')
         
         # Seen markets to detect new listings per exchange
-        cursor.execute('''
+        await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS seen_markets (
                 exchange TEXT NOT NULL,
                 symbol TEXT NOT NULL,
@@ -527,12 +559,11 @@ class Database:
             )
         ''')
 
-        self.conn.commit()
+        await self.conn.commit()
         
     async def save_pattern(self, pattern: Pattern):
         """Save a discovered pattern to database."""
-        cursor = self.conn.cursor()
-        cursor.execute('''
+        await self.conn.execute('''
             INSERT OR REPLACE INTO patterns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             pattern.id,
@@ -550,22 +581,19 @@ class Database:
             pattern.usage_count,
             pattern.success_count
         ))
-        self.conn.commit()
+        await self.conn.commit()
 
-    def get_seen_markets(self, exchange: str) -> set:
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT symbol FROM seen_markets WHERE exchange = ?', (exchange,))
-        return {row[0] for row in cursor.fetchall()}
+    async def get_seen_markets(self, exchange: str) -> set:
+        async with self.conn.execute('SELECT symbol FROM seen_markets WHERE exchange = ?', (exchange,)) as cursor:
+            return {row[0] for row in await cursor.fetchall()}
 
-    def mark_market_seen(self, exchange: str, symbol: str):
-        cursor = self.conn.cursor()
-        cursor.execute('INSERT OR IGNORE INTO seen_markets(exchange, symbol, first_seen) VALUES(?, ?, ?)', (exchange, symbol, datetime.utcnow().isoformat()))
-        self.conn.commit()
+    async def mark_market_seen(self, exchange: str, symbol: str):
+        await self.conn.execute('INSERT OR IGNORE INTO seen_markets(exchange, symbol, first_seen) VALUES(?, ?, ?)', (exchange, symbol, datetime.utcnow().isoformat()))
+        await self.conn.commit()
 
     async def save_strategy(self, strategy: Strategy):
         """Save a strategy to database."""
-        cursor = self.conn.cursor()
-        cursor.execute('''
+        await self.conn.execute('''
             INSERT OR REPLACE INTO strategies VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             strategy.id,
@@ -591,12 +619,11 @@ class Database:
             strategy.last_trade.isoformat() if strategy.last_trade else None,
             json.dumps(strategy.trade_history)
         ))
-        self.conn.commit()
+        await self.conn.commit()
 
     async def save_trade(self, trade: Dict):
         """Save a completed trade."""
-        cursor = self.conn.cursor()
-        cursor.execute('''
+        await self.conn.execute('''
             INSERT INTO trades VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             trade['id'],
@@ -611,16 +638,15 @@ class Database:
             trade['opened_at'],
             trade['closed_at']
         ))
-        self.conn.commit()
+        await self.conn.commit()
 
     async def save_state(self, state: SystemState):
         """Save system state snapshot."""
-        cursor = self.conn.cursor()
         positions_payload = {
             pid: {**asdict(pos), 'opened_at': pos.opened_at.isoformat()}
             for pid, pos in state.positions.items()
         }
-        cursor.execute('''
+        await self.conn.execute('''
             INSERT INTO system_state VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             state.mode.value,
@@ -635,13 +661,12 @@ class Database:
             state.last_update.isoformat(),
             datetime.utcnow().isoformat()
         ))
-        self.conn.commit()
+        await self.conn.commit()
 
     async def load_patterns(self) -> List[Pattern]:
         """Load all patterns from database."""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM patterns ORDER BY confidence DESC')
-        rows = cursor.fetchall()
+        async with self.conn.execute('SELECT * FROM patterns ORDER BY confidence DESC') as cursor:
+            rows = await cursor.fetchall()
         
         patterns = []
         for row in rows:
@@ -667,9 +692,8 @@ class Database:
 
     async def load_strategies(self) -> List[Strategy]:
         """Load all strategies from database."""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM strategies WHERE status != "retired"')
-        rows = cursor.fetchall()
+        async with self.conn.execute('SELECT * FROM strategies WHERE status != "retired"') as cursor:
+            rows = await cursor.fetchall()
         
         strategies = []
         for row in rows:
@@ -703,12 +727,11 @@ class Database:
 
     async def execute(self, query: str, params=None):
         """Execute a database query with optional parameters."""
-        cursor = self.conn.cursor()
         if params:
-            cursor.execute(query, params)
+            cursor = await self.conn.execute(query, params)
         else:
-            cursor.execute(query)
-        self.conn.commit()
+            cursor = await self.conn.execute(query)
+        await self.conn.commit()
         return cursor
 
 # ═══════════════════════════════ LEARNING MEMORY ═══════════════════════════════
@@ -1056,26 +1079,6 @@ class PatternDiscoveryEngine:
         """
         The core loop for discovering new patterns. This runs periodically.
         """
-        log.info("🔬 Starting pattern discovery cycle...")
-        
-        # Run all discovery methods in parallel for speed
-        tasks = [
-            self._discover_price_action_patterns(),
-            self._discover_volume_patterns(),
-            self._discover_time_based_patterns(),
-            self._discover_correlation_patterns(),
-            self._discover_psychological_patterns(),
-            self._discover_volatility_patterns(),
-            self._discover_microstructure_patterns()
-        ]
-
-        # Optional discovery modules
-        if Config.FEED_LISTING:
-            tasks.append(self._discover_listing_events())
-        # Weekend behavior patterns
-        if Config.FEED_WEEKEND:
-            tasks.append(self._discover_weekend_patterns())
-        # Cross-exchange spreads/stat-arb
         log.info("🔬 Starting pattern discovery cycle...")
         
         # Run all discovery methods in parallel for speed
@@ -2602,9 +2605,6 @@ async def execute_strategy(state, opp):
         This implements genetic crossover for strategy evolution.
         """
         # Get pairs of successful strategies
-        successful_strategies = [
-            s for s in state.strategies.values()
-            if s.status in [StrategyStatus.ACTIVE, StrategyStatus.MICRO]
             and s.win_rate > 0.55
             and s.total_trades >= 20
         ]

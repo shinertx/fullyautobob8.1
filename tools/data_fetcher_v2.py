@@ -366,11 +366,15 @@ echo ""
 echo "Safe to close terminal and take laptop! ✈️"
 '''
     
-    with open('/home/benjaminjones/fullyautobob8.1-1/start_background_fetch.sh', 'w') as f:
+    # Resolve project root from this file location instead of hardcoding a path
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    script_path = os.path.join(project_root, 'start_background_fetch.sh')
+
+    with open(script_path, 'w') as f:
         f.write(script_content)
     
-    os.chmod('/home/benjaminjones/fullyautobob8.1-1/start_background_fetch.sh', 0o755)
-    print("✅ Created start_background_fetch.sh")
+    os.chmod(script_path, 0o755)
+    print("✅ Created start_background_fetch.sh at", script_path)
 
 async def main():
     parser = argparse.ArgumentParser(description="Optimized Data Fetcher v2 for SimLab")

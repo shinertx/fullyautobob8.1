@@ -1,4 +1,32 @@
-# Byte-compiled / optimized / DLL files__pycache__/*.py[cod]*$py.class# C extensions*.so# Distribution / packaging.Pythonbuild/develop-eggs/dist/downloads/eggs/.eggs/lib/lib64/parts/sdist/var/wheels/pip-wheel-metadata/share/python-wheels/*.egg-info/.installed.cfg*.eggMANIFEST
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -92,60 +120,65 @@ cython_debug/
 # VS Code
 .vscode/
 
-# Application specific
-state.json
+# ===== v26meme Trading Bot Specific =====
+# Database files
+*.db
+*.db.*
+*.sqlite
+*.sqlite3
 v26meme.db*
+*.db.backup
+
+# Log files
 *.log
-env_validation_report.json
-.env
-.env.*
-.env.save
+*.log.*
 nohup.out
 
-# Environment
-.venv/
-__pycache__/
-*.pyc
+# Environment files
+.env
+.env.*
+.env.local
+.env.development
+.env.staging
+.env.production
+.env.save
 
-# Additional ignores for workspace
+# State and runtime files
+state.json
+env_validation_report.json
 
-# Ignore workspace-local binaries and tool-generated files
-test_env/bin/
-test_env/lib/
-test_env/include/
-test_env/share/
-test_env/pyvenv.cfg
-test_env/Activate.ps1
-test_env/activate*
-test_env/bandit*
-test_env/dmypy*
-test_env/flake8*
-test_env/httpx*
-test_env/isort*
-test_env/mypy*
-test_env/py.test*
-test_env/pycodestyle*
-test_env/pyflakes*
-test_env/pygmentize*
-test_env/pylint*
-test_env/pyreverse*
-test_env/pytest*
-test_env/radon*
-test_env/stubgen*
-test_env/stubtest*
-test_env/tqdm*
-test_env/vulture*
-test_env/undill*
-test_env/normalizer*
-test_env/markdown-it*
-test_env/aiodns*
-test_env/aiohttp*
-test_env/aiosignal*
-test_env/annotated_types*
-test_env/anyio*
-test_env/astroid*
-test_env/async_timeout*
-test_env/attrs*
-test_env/attr*
-test_env/_pytest/
-test_env/__pycache__/
+# Data files (can be regenerated)
+data/*.csv
+data/*.parquet
+data/*.json
+data_fetch_background.log
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# API Keys and secrets
+api_keys.txt
+secrets.txt
+*.key
+*.pem
+
+# Test environment
+test_env/
+
+# Backup files
+*.backup
+backup_*
