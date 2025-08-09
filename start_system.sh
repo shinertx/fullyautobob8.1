@@ -23,7 +23,7 @@ fi
 
 if [ -f "institutional_dashboard.py" ]; then
   echo "🏛️ Starting Institutional Trading Dashboard on http://localhost:8080"
-  WEB_PORT=8080 python3 institutional_dashboard.py &
+  nohup /usr/bin/python3 -u institutional_dashboard.py > institutional_dashboard.log 2>&1 &
   DASHBOARD_PID=$!
 else
   echo "❌ Institutional dashboard not found (institutional_dashboard.py). Skipping dashboard startup."
@@ -38,7 +38,7 @@ export TRADING_MODE=${TRADING_MODE:-PAPER}
 # Add a loop to keep the bot running
 while true; do
     echo "🔄 Starting/Restarting trading bot..."
-    python3 v26meme_full.py > v26meme_full.log 2>&1 &
+    /usr/bin/python3 -u v26meme_full.py > v26meme_full.log 2>&1 &
     BOT_PID=$!
     echo "🤖 Bot started with PID: $BOT_PID"
     wait $BOT_PID

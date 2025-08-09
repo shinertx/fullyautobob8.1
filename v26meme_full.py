@@ -2604,7 +2604,9 @@ async def execute_strategy(state, opp):
         Combine elements from two successful strategies to create offspring.
         This implements genetic crossover for strategy evolution.
         """
-        # Get pairs of successful strategies
+        successful_strategies = [
+            s for s in state.strategies.values()
+            if s.status == StrategyStatus.ACTIVE
             and s.win_rate > 0.55
             and s.total_trades >= 20
         ]
