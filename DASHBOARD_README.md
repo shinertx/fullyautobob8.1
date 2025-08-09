@@ -1,202 +1,80 @@
 # 🏛️ v26meme Institutional Trading Dashboard
 
-Professional institutional-grade trading interface with comprehensive analytics and SimLab integration.
+Comprehensive institutional-grade real-time monitoring and analytics platform
+combining all dashboard features with SimLab integration for professional
+quantitative fund operations.
 
-## 🌟 Institutional Features
+## 🌟 Features
 
-### 📊 **Real-Time Institutional Monitoring**
-- **Portfolio NAV**: Real-time net asset value with institutional metrics
-- **Risk Management**: VaR, maximum drawdown, and volatility tracking
-- **SimLab Integration**: 879+ completed simulations with comprehensive analytics
-- **Strategy Attribution**: Detailed performance breakdown by strategy and symbol
-- **Pattern Discovery**: Advanced pattern recognition with confidence scoring
+### 📊 **Institutional KPIs**
+- **Portfolio NAV**: Live equity tracking with auto-refresh.
+- **Sharpe Ratio**: Real-time risk-adjusted return metric.
+- **Max Drawdown**: Key risk control indicator.
+- **Daily P&L**: Intra-day performance measurement.
+- **Win Rate**: Live trade success percentage.
+- **Active Strategies**: Count of currently operating strategies.
 
-### 📈 **Professional Institutional Charts**
-- **Equity Curve**: Institutional-grade historical performance tracking
-- **Risk Analytics**: VaR visualization and drawdown analysis
-- **Strategy Performance**: Multi-strategy performance attribution
-- **SimLab Results**: Comprehensive simulation performance metrics
+### 🧪 **SimLab Integration**
+- **Total Simulations**: See total number of historical backtests run.
+- **Simulation Trades**: View total trades analyzed by the simulation engine.
+- **Success Rate**: Monitor the completion rate of simulations.
+- **Top Performers**: Identify the most promising strategies from simulations.
 
-### 🎯 **Institutional KPI Dashboard**
-- Portfolio NAV with risk-adjusted returns
-- Sharpe Ratio and institutional performance metrics
-- Maximum Drawdown and risk control measures
-- Win Rate and execution quality metrics
-- Active strategies with diversification analysis
-- SimLab validation and top performers
+### 📈 **Advanced Charting & Risk**
+- **Live Equity Curve**: Visualize portfolio growth over time.
+- **Risk Metrics**: Track Value at Risk (VaR 95% & 99%) and Annualized Volatility.
 
-### 🔄 **Real-Time Institutional Updates**
-- WebSocket streaming with <100ms latency
-- WebSocket streaming with <100ms latency
-- Institutional-grade data integrity and validation
-- Professional polling fallback for reliability
-- Real-time compliance and risk monitoring
+### 💼 **Live Position Management**
+- Real-time view of all open positions.
+- P&L, side, entry price, and notional value for each position.
+- Sortable and color-coded for quick analysis.
 
-## 🚀 Quick Start
+### 🧬 **Strategy Performance Analytics**
+- In-depth table of all active strategies.
+- Track trades, total P&L, win rate, and average P&L per trade.
+- Monitor average confidence scores from the AI.
 
-### Option 1: Use the Launcher (Recommended)
-```bash
-./start_system.sh
-```
+### � **Recent Activity**
+- View the 50 most recent closed trades.
+- Analyze execution details including P&L, duration, and associated strategy.
 
-### Option 2: Manual Start
-```bash
-# Start institutional dashboard
-python3 institutional_dashboard.py
+## 🔧 Technical Details
 
-# In another terminal, start the bot
-python3 v26meme_full.py
-```
+- **Backend**: FastAPI with WebSockets for high-performance, low-latency streaming.
+- **Database**: Direct connection to `v26meme.db` for real-time data.
+- **Updates**: Real-time 1-second refresh interval.
+- **Design**: Responsive, multi-device layout suitable for professional monitoring.
 
-## 🌐 Access Your Institutional Dashboard
+## 📈 Getting Started
 
-Once started, access your institutional dashboard at:
-- **Local**: http://localhost:8080
-- **Network**: http://YOUR_IP:8080 (accessible from other devices)
-- **API Docs**: http://localhost:8080/docs
-- **Health Check**: http://localhost:8080/health
+1.  The dashboard is started automatically as part of the main system script:
+    ```bash
+    ./start_system.sh
+    ```
 
-## 📱 What You'll See
+2.  Access the interface in your browser:
+    - **Local**: http://localhost:8000
+    - **Network**: http://YOUR_IP:8000 (for remote access)
 
-### 🎯 **Institutional KPI Row**
-- **💰 Portfolio NAV**: Real-time net asset value with performance metrics
-- **📊 Sharpe Ratio**: Risk-adjusted return measurement
-- **📉 Max Drawdown**: Risk control and capital preservation metrics
-- **📈 Daily P&L**: Intraday profit/loss with attribution analysis
-- **🎯 Win Rate**: Trade execution success percentage
-- **🧬 Active Strategies**: Strategy diversification and allocation
+## 🔗 API Endpoints
 
-### 🧪 **SimLab Integration Panel**
-- **Total Simulations**: Historical backtest completion status
-- **Simulation Trades**: Analyzed trade volume and patterns
-- **Success Rate**: Simulation completion and validation metrics
-- **Recent Activity**: 24-hour simulation engine activity
+The institutional dashboard provides a comprehensive JSON API for programmatic access.
 
-### 📊 **Professional Charts Section**
-- **Equity Curve**: Institutional performance tracking with benchmarks
-- **Risk Metrics**: VaR, volatility, and risk-adjusted returns
+- **Main Dashboard HTML**: `GET /`
+- **WebSocket Stream**: `WS /ws`
+- **Institutional Overview**: `GET /api/institutional-overview`
+- **Portfolio Analytics**: `GET /api/portfolio`
+- **Risk Analytics**: `GET /api/risk`
+- **SimLab Metrics**: `GET /api/simlab`
+- **Live Positions**: `GET /api/positions`
+- **Strategy Performance**: `GET /api/strategies`
+- **Recent Trades**: `GET /api/trades`
+- **Equity Curve Data**: `GET /api/equity-curve`
+- **System Health**: `GET /health`
 
-### 📋 **Institutional Data Tables**
-- **💼 Live Positions**: Current positions with ROI and risk metrics
-- **🎯 Strategy Performance**: Multi-strategy attribution analysis
-- **🏆 SimLab Top Performers**: Best-performing simulated strategies
-- **⚡ Trade Execution**: Recent trades with execution analysis
+## ⚙️ Configuration
 
-## 🎨 **Institutional Design**
-
-Built to institutional standards used by professional quantitative funds:
-
-- **Professional Dark Theme**: Trading room aesthetics optimized for extended monitoring
-- **Color-Coded Risk Management**: Traffic light system for immediate risk assessment
-- **Institutional UI Standards**: Clean, professional interface designed for fund operations
-- **Real-Time Status Indicators**: Clear visual feedback on all system components
-- **Multi-Device Optimization**: Desktop workstation, tablet, and mobile responsive design
-- **Professional Animations**: Smooth real-time updates and institutional-grade transitions
-
-## 🔧 **Technical Architecture**
-
-### Institutional Stack
-- **Backend**: FastAPI with async WebSocket support for institutional-grade performance
-- **Frontend**: Modern ES6+ JavaScript with professional Chart.js integration
-- **Charts**: Financial-grade charting with technical indicators and risk visualization
-- **Styling**: Tailwind CSS with institutional design standards
-- **Database**: SQLite3 with optimized queries for real-time institutional analytics
-- **Security**: CORS protection, rate limiting, and audit trails
-
-### Performance Standards
-- **Update Frequency**: Sub-second real-time updates (100ms-1000ms)
-- **Data Integrity**: Comprehensive validation and error handling
-- **Response Times**: <100ms API response times for institutional requirements
-- **Reliability**: Auto-reconnection, polling fallback, and 99.9% uptime target
-- **Scalability**: Supports 100+ concurrent institutional users
-
-## 📈 **Institutional Monitoring Best Practices**
-
-### 🎯 **Critical Metrics to Monitor**
-1. **Portfolio NAV Growth**: Track toward institutional performance targets
-2. **Risk-Adjusted Returns**: Sharpe ratio >1.5 for institutional standards
-3. **Maximum Drawdown**: Keep <15% for capital preservation requirements
-4. **Strategy Diversification**: Maintain 5+ uncorrelated active strategies
-5. **SimLab Validation**: Ensure new strategies pass historical backtesting
-
-### ⚠️ **Institutional Risk Warnings**
-- Portfolio drawdown exceeding 10% (immediate review required)
-- Sharpe ratio declining below 1.0 (risk management intervention)
-- Strategy concentration >25% in single strategy (diversification breach)
-- SimLab validation failing for new strategies (halt deployment)
-- VaR breaching predefined institutional limits
-
-### 🚀 **Institutional Success Indicators**
-- Consistent NAV growth with controlled volatility
-- Sharpe ratio above 1.5 (institutional benchmark)
-- Multiple profitable strategies with low correlation
-- Regular pattern discovery and strategy evolution
-- SimLab validation confirming strategy robustness
-
-## 🌟 **Advanced Institutional Features**
-
-### 🔒 **Security & Compliance**
-- Read-only dashboard interface (no trading controls)
-- Complete audit trails for all user interactions
-- CORS protection and rate limiting
-- TLS encryption for all data transmission
-- Role-based access control system
-
-### 📊 **Professional APIs**
-- `/api/institutional-overview` - Comprehensive institutional metrics
-- `/api/portfolio` - Real-time portfolio analytics
-- `/api/risk` - Advanced risk management metrics
-- `/api/simlab` - SimLab simulation results and validation
-- `/api/performance-attribution` - Detailed return decomposition
-
-### 📱 **Multi-Platform Institutional Access**
-- Desktop workstation with multi-monitor support
-- Network access for remote institutional teams
-- Mobile optimization for on-the-go monitoring
-- RESTful APIs for third-party institutional integrations
-
-## 🎯 **Institutional Success Framework**
-
-1. **Daily Monitoring**: Review institutional KPIs every trading session
-2. **Risk Management**: Monitor VaR and drawdown limits continuously
-3. **Strategy Health**: Evaluate individual strategy performance and correlation
-4. **SimLab Validation**: Ensure all strategies pass historical backtesting
-5. **Performance Attribution**: Analyze return sources and factor exposures
-
-## 🛠️ **Troubleshooting**
-
-### Dashboard Won't Load
-```bash
-# Check if institutional dashboard is running
-ps aux | grep institutional_dashboard
-
-# Restart institutional dashboard
-python3 institutional_dashboard.py
-```
-
-### No Data Showing
-1. Ensure trading bot is running (`python3 v26meme_full.py`)
-2. Check database file exists (`v26meme.db`)
-3. Verify institutional dashboard is running on port 8080
-4. Check health endpoint: `curl http://localhost:8080/health`
-
-### Connection Issues
-- Dashboard auto-reconnects WebSocket connections
-- Refresh page if issues persist
-- Check firewall settings for port 8080
-- Verify network connectivity and API endpoints
-
-## 🎉 **Your Institutional Trading Command Center**
-
-This institutional dashboard provides everything professional quantitative funds require:
-- **Real-time institutional analytics**
-- **Professional risk management**
-- **Comprehensive SimLab integration**
-- **Advanced performance attribution**
-- **Institutional-grade monitoring**
-
-Transform your trading operation into a professional quantitative fund! 🏛️
-
----
-
-*Built with institutional standards for professional quantitative trading operations*
+The dashboard uses these environment variables, typically set in a `.env` file:
+- `DB_PATH`: Path to the SQLite database (default: `v26meme.db`)
+- `WEB_PORT`: Dashboard port (default: 8000)
+- `LOG_LEVEL`: Logging detail (default: INFO)

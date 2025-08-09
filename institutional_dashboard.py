@@ -938,6 +938,26 @@ class InstitutionalDashboard:
                 </div>
             </div>
 
+            <!-- Discovered Patterns -->
+            <div class="bg-gray-800 card rounded-lg p-6 border border-gray-700">
+                <h3 class="text-xl font-bold mb-4">💡 Discovered Patterns</h3>
+                <div class="overflow-y-auto max-h-80">
+                    <table class="w-full text-sm">
+                        <thead class="sticky top-0 bg-gray-700">
+                            <tr>
+                                <th class="text-left p-2">Type</th>
+                                <th class="text-left p-2">Symbol</th>
+                                <th class="text-left p-2">Confidence</th>
+                                <th class="text-left p-2">Avg. Return</th>
+                            </tr>
+                        </thead>
+                        <tbody id="patternsTable">
+                            <tr><td colspan="4" class="text-center py-4 text-gray-400">No patterns discovered</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- SimLab Top Performers -->
             <div class="bg-gray-800 card rounded-lg p-6 border border-gray-700">
                 <h3 class="text-xl font-bold mb-4">🏆 SimLab Top Performers</h3>
@@ -1066,6 +1086,9 @@ class InstitutionalDashboard:
             // Update SimLab strategies table
             updateSimlabStrategiesTable(simlab.top_performing_strategies || []);
             
+            // Update patterns table
+            updatePatternsTable(data.patterns || []);
+            
             // Update trades table
             updateTradesTable(data.trades || []);
             
@@ -1113,14 +1136,14 @@ class InstitutionalDashboard:
             `).join('');
         }
         
-        function updateSimlabStrategiesTable(strategies) {
-            const tbody = document.getElementById('simlabStrategiesTable');
-            if (strategies.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-gray-400">No simulation data</td></tr>';
+        function updateSimlabStrategiesTable(simStrategies) {
+            const tableBody = document.getElementById('simlabStrategiesTable');
+            if (simStrategies.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-gray-400">No simulation data</td></tr>';
                 return;
             }
             
-            tbody.innerHTML = strategies.slice(0, 10).map(strat => `
+            tableBody.innerHTML = simStrategies.slice(0, 10).map(strat => `
                 <tr class="table-row border-b border-gray-700">
                     <td class="p-2">${(strat.strategy_name || 'Unknown').substring(0, 12)}...</td>
                     <td class="p-2 ${getColorClass(strat.avg_sharpe - 1)}">${formatNumber(strat.avg_sharpe)}</td>
@@ -1129,98 +1152,42 @@ class InstitutionalDashboard:
                 </tr>
             `).join('');
         }
-        
-        function updateTradesTable(trades) {
-            const tbody = document.getElementById('tradesTable');
-            if (trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-gray-400">No recent trades</td></tr>';
+
+        function updatePatternsTable(patterns) {
+            const tableBody = document.getElementById('patternsTable');
+            if (!patterns || patterns.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-gray-400">No patterns discovered</td></tr>';
                 return;
             }
-            
-            tbody.innerHTML = trades.slice(0, 20).map(trade => `
-                <tr class="table-row border-b border-gray-700">
-                    <td class="p-2">${trade.symbol}</td>
-                    <td class="p-2">
-                        <span class="px-2 py-1 rounded text-xs ${trade.side === 'buy' ? 'bg-green-600' : 'bg-red-600'}">
-                            ${trade.side.toUpperCase()}
-                        </span>
-                    </td>
-                    <td class="p-2">${formatNumber(trade.amount, 4)}</td>
-                    <td class="p-2">$${formatNumber(trade.price)}</td>
-                    <td class="p-2 ${getColorClass(trade.pnl)}">$${formatNumber(trade.pnl)}</td>
-                    <td class="p-2 ${getColorClass(trade.pnl_pct)}">${formatPercent(trade.pnl_pct * 100)}</td>
-                    <td class="p-2">${formatDuration(trade.duration_days)}</td>
-                    <td class="p-2">${(trade.strategy_name || 'N/A').substring(0, 8)}</td>
-                    <td class="p-2">${new Date(trade.closed_at).toLocaleTimeString()}</td>
+            tableBody.innerHTML = patterns.map(p => `
+                <tr class="table-row">
+                    <td class="p-2">${p.pattern_type}</td>
+                    <td class="p-2">${p.symbol || 'Multi'}</td>
+                    <td class="p-2">${formatPercent(p.confidence, 1)}</td>
+                    <td class="p-2 ${formatSign(p.avg_return)}">${formatPercent(p.avg_return, 2)}</td>
                 </tr>
             `).join('');
         }
-        
-        function initChart() {
-            const ctx = document.getElementById('equityChart').getContext('2d');
-            equityChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'Portfolio NAV',
-                        data: [],
-                        borderColor: 'rgb(34, 197, 94)',
-                        backgroundColor: 'rgba(34, 197, 94, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: { display: false }
-                    },
-                    scales: {
-                        y: { 
-                            beginAtZero: false,
-                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                            ticks: { color: 'white' }
-                        },
-                        x: { 
-                            grid: { color: 'rgba(255, 255, 255, 0.1)' },
-                            ticks: { color: 'white' }
-                        }
-                    }
-                }
-            });
+
+        function updateTradesTable(trades) {
+            const tableBody = document.getElementById('tradesTable');
+            if (!trades || trades.length === 0) {
+                tableBody.innerHTML = '<tr><td colspan="9" class="text-center py-4 text-gray-400">No recent trades</td></tr>';
+                return;
+            }
+            
+            tableBody.innerHTML = trades.slice(0, 20).map(t => `
+                <tr class="table-row">
+                    <td class="p-2">${t.symbol}</td>
+                    <td class="p-2 ${t.side === 'buy' ? 'text-green-400' : 'text-red-400'}">${t.side.toUpperCase()}</td>
+                    <td class="p-2 ${formatSign(t.pnl)}">${formatNumber(t.pnl, 2)}</td>
+                    <td class="p-2">${t.strategy_name}</td>
+                    <td class="p-2">${new Date(t.closed_at).toLocaleTimeString()}</td>
+                </tr>
+            `).join('');
         }
-        
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
-            
-            ws.onopen = function(event) {
-                document.getElementById('wsStatus').textContent = 'WebSocket: Connected';
-                document.getElementById('wsStatus').className = 'text-sm text-green-400';
-                console.log('Institutional WebSocket connected');
-            };
-            
-            ws.onmessage = function(event) {
-                const data = JSON.parse(event.data);
-                updateInstitutionalDashboard(data);
-            };
-            
-            ws.onclose = function(event) {
-                document.getElementById('wsStatus').textContent = 'WebSocket: Reconnecting...';
-                document.getElementById('wsStatus').className = 'text-sm text-yellow-400';
-                console.log('Institutional WebSocket disconnected, reconnecting...');
-                setTimeout(connectWebSocket, 3000);
-            };
-            
-            ws.onerror = function(error) {
-                console.error('Institutional WebSocket error:', error);
-                document.getElementById('wsStatus').textContent = 'WebSocket: Error';
-                document.getElementById('wsStatus').className = 'text-sm text-red-400';
-            };
-        }
-        
-        // Initialize dashboard
+
+        // Initial load
         document.addEventListener('DOMContentLoaded', function() {
             initChart();
             connectWebSocket();

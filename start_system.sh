@@ -43,15 +43,6 @@ echo "🤖 Bot started with PID: $BOT_PID"
 echo "⏱️  Waiting 5 seconds for bot to initialize database..."
 sleep 5
 
-if [ -f "institutional_dashboard.py" ]; then
-  echo "🏛️ Starting Institutional Trading Dashboard on http://localhost:8080"
-  nohup /usr/bin/python3 -u institutional_dashboard.py > institutional_dashboard.log 2>&1 &
-  DASHBOARD_PID=$!
-else
-  echo "❌ Institutional dashboard not found (institutional_dashboard.py). Skipping dashboard startup."
-  DASHBOARD_PID=""
-fi
-
 # Monitor the bot and restart if it crashes
 (
   while true; do

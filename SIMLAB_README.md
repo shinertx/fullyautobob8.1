@@ -34,27 +34,27 @@
 ```
 ├── simlab.py           # Main simulation engine
 ├── data/               # Historical data files
-│   ├── BTC_USDC_5m.csv
-│   ├── ETH_USDT_15m.csv
+│   ├── BTC_USDC_5m.parquet
+│   ├── ETH_USDT_15m.parquet
 │   └── ...
 └── tools/
-    ├── sim_enqueue.py  # Manual simulation utility
-    └── data_fetcher.py # Automatic data download tool
-├── fetch_data.sh       # Quick data fetch script
+    ├── sim_enqueue.py      # Manual simulation utility
+    └── data_fetcher_v2.py  # Optimized data download tool
+├── fetch_data.sh           # Main data fetch script
 ```
 
 ## 📈 Data Format
 
-Files should be named: `{BASE}_{QUOTE}_{TIMEFRAME}.csv`
+Files should be named: `{BASE}_{QUOTE}_{TIMEFRAME}.parquet`
 
-**Example**: `BTC_USDC_5m.csv`, `ETH_USDT_15m.parquet`
+**Example**: `BTC_USDC_5m.parquet`, `ETH_USDT_15m.parquet`
 
 **Required columns** (case-insensitive):
 ```csv
 timestamp,open,high,low,close,volume
 ```
 
-- **timestamp**: Unix timestamp (ms or seconds)
+- **timestamp**: Unix timestamp (ms)
 - **open,high,low,close**: Price data
 - **volume**: Trading volume
 
@@ -102,10 +102,10 @@ Get tons of historical data automatically:
 ./fetch_data.sh
 
 # Custom fetch: specific symbols and timeframes
-python3 tools/data_fetcher.py --symbols BTC/USD ETH/USD SOL/USD --timeframes 5m 1h --days 60
+python3 tools/data_fetcher_v2.py --max-files 10
 
-# Bulk fetch: everything available (100+ files)
-python3 tools/data_fetcher.py --days 90
+# Bulk fetch: everything available (1000+ files)
+python3 tools/data_fetcher_v2.py --max-files 1000
 ```
 
 **Data Sources** (no API keys needed):
@@ -118,7 +118,7 @@ Just drop data files in `./data/` and SimLab will auto-discover them:
 
 ```bash
 # Add data file manually
-cp historical_data.csv data/BTC_USDC_5m.csv
+cp historical_data.parquet data/BTC_USDC_5m.parquet
 
 # SimLab automatically detects and queues simulation
 # Check logs for: "🧪 SimLab enqueued BTC_USDC_5m"
@@ -176,25 +176,30 @@ The simulation results feed back into the main system's:
 
 ## 🔧 Data Fetcher Features
 
-The built-in data fetcher (`tools/data_fetcher.py`) provides:
+The built-in data fetcher (`tools/data_fetcher_v2.py`) provides:
 
 - **Multi-Source**: Automatically tries Coinbase → Kraken → CoinGecko
 - **Rate Limited**: Respects API limits, won't get blocked
-- **Bulk Download**: Can fetch 100+ files in one command
+- **Bulk Download**: Can fetch 1000+ files in one command
 - **Smart Retry**: Falls back to different exchanges if one fails
 - **No API Keys**: Uses free public endpoints
-- **Multiple Timeframes**: 5m, 15m, 1h, 4h, 1d data
+- **Multiple Timeframes**: 1m, 5m, 15m, 1h, 4h, 1d data
 - **Popular Symbols**: BTC, ETH, SOL, ADA, MATIC, DOGE, and more
+- **Parquet Format**: Saves data in highly compressed, fast-loading Parquet files.
 
 **Example Bulk Fetch Output**:
 ```
-🚀 Starting bulk data fetch (30 days back)...
-✅ Fetched 8640 candles for BTC/USD 5m from Coinbase
-✅ Fetched 720 candles for ETH/USD 1h from Coinbase
-💾 Saved 8640 rows to data/BTC_USD_5m.csv
-💾 Saved 720 rows to data/ETH_USD_1h.csv
+🚀 Data Fetcher v2 - Optimized for SimLab
+================================
+💾 Max files: 1000
+📂 Data dir: data
+🗜️ Format: Parquet (90% smaller than CSV)
+
+🔍 Fetching BTC/USDT 5m (180 days)...
+📦 BTC/USDT 5m: +300 candles
 ...
-📁 147 data files in data/
+✅ BTC/USDT 5m: 51689 candles from Coinbase
+💾 Saved 51689 rows → data/BTC_USDT_5m.parquet (0.4MB)
 ```
 
 ---
