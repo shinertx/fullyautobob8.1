@@ -15,11 +15,10 @@ import os
 import asyncio
 import json
 import math
-import csv
 import sqlite3
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Any
 
 import numpy as np
 import pandas as pd
@@ -541,5 +540,7 @@ class SimLab:
 
     # -- utils ----------------------------------------------------------------
     def _new_id(self, prefix: str) -> str:
-        import hashlib, time, random
+        import hashlib
+        import time
+        import random
         return hashlib.sha256(f"{prefix}_{time.time()}_{random.random()}".encode()).hexdigest()[:16]

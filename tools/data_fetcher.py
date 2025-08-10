@@ -9,11 +9,8 @@ import aiohttp
 import pandas as pd
 import ccxt.async_support as ccxt
 import os
-import time
-import gzip
-import pickle
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Optional
 import argparse
 
 class DataFetcher:
@@ -140,7 +137,6 @@ class DataFetcher:
             
             # Calculate time range - fetch MASSIVE history
             end_time = datetime.utcnow()
-            start_time = end_time - timedelta(days=days_back)
             
             # Coinbase has a 300 candle limit per request, so we'll chunk it
             all_data = []
@@ -207,7 +203,7 @@ class DataFetcher:
                         else:
                             break
                     await asyncio.sleep(1)  # Rate limiting for Kraken
-                except Exception as e:
+                except Exception:
                     break  # Stop if we hit an error
                     
             await exchange.close()
@@ -309,7 +305,7 @@ class DataFetcher:
         print(f"🚀 Starting MASSIVE data fetch ({days_back} days back)...")
         print(f"📊 Will attempt to fetch {len(self.symbols)} symbols × {len(self.timeframes)} timeframes = {len(self.symbols) * len(self.timeframes)} total files")
         if compress:
-            print(f"🗜️ Files will be compressed to save disk space!")
+            print("🗜️ Files will be compressed to save disk space!")
         
         tasks = []
         semaphore = asyncio.Semaphore(max_concurrent)  # Lower concurrency to avoid rate limits
@@ -335,7 +331,7 @@ class DataFetcher:
         files = os.listdir(self.data_dir)
         csv_files = [f for f in files if f.endswith('.csv') or f.endswith('.csv.gz')]
         
-        print(f"\n🎉 MASSIVE data fetch complete!")
+        print("\n🎉 MASSIVE data fetch complete!")
         print(f"📁 {len(csv_files)} data files in {self.data_dir}/")
         print(f"🧪 SimLab will have {len(csv_files)} historical datasets to simulate!")
         print(f"📊 Estimated total candles: {len(csv_files) * 500} (~{len(csv_files) * 500 / 1000}K)")
@@ -354,8 +350,8 @@ async def main():
     
     args = parser.parse_args()
     
-    print(f"🚀 MASSIVE Data Fetcher for SimLab")
-    print(f"================================")
+    print("🚀 MASSIVE Data Fetcher for SimLab")
+    print("================================")
     print(f"📅 History: {args.days} days")
     print(f"💾 Max files: {args.max_files}")
     print(f"📂 Data dir: {args.data_dir}")

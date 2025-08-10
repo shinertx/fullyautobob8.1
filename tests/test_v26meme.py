@@ -12,7 +12,6 @@ def test_config_initialization():
     # It's better to reload the specific module where Config is defined
     if 'v26meme_full' in sys.modules:
         importlib.reload(sys.modules['v26meme_full'])
-    from v26meme_full import Config
 
     assert Config.INITIAL_CAPITAL == 200.0
     assert Config.TARGET_CAPITAL == 1_000_000.0
@@ -20,13 +19,13 @@ def test_config_initialization():
     assert Config.DB_PATH == "v26meme.db"
 
 def test_is_sane_ticker():
-    assert is_sane_ticker("BTC/USDT") == True
-    assert is_sane_ticker("ETH/USD") == True
-    assert is_sane_ticker("PEPE/USDC") == True
-    assert is_sane_ticker("BTCUP/USDT") == False
-    assert is_sane_ticker("ETHDOWN/USDT") == False
-    assert is_sane_ticker("INVALID") == False
-    assert is_sane_ticker("BTC/FOO") == False
+    assert is_sane_ticker("BTC/USDT")
+    assert is_sane_ticker("ETH/USD")
+    assert is_sane_ticker("PEPE/USDC")
+    assert not is_sane_ticker("BTCUP/USDT")
+    assert not is_sane_ticker("ETHDOWN/USDT")
+    assert not is_sane_ticker("INVALID")
+    assert not is_sane_ticker("BTC/FOO")
 
 def test_calculate_kelly_position():
     # Test case 1: Profitable scenario

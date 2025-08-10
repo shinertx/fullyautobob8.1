@@ -3,43 +3,39 @@
 v26meme: Autonomous Trading Intelligence
 Built to discover patterns, evolve strategies, and achieve $200 → $1M in 90 days.
 """
-
-import os
-import sys
 import asyncio
-import time
+import os
 import json
+import time
 import hashlib
-import random
 import math
-import logging
-import traceback
-import sqlite3
 import re
-import ast
+import glob
+import gzip
+import shutil
+import warnings
+import builtins
+import inspect
+import argparse
+import random
+import traceback
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple, Union
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from collections import defaultdict, deque
-import warnings
+import numpy as np
+import pandas as pd
+import ccxt.async_support as ccxt
 warnings.filterwarnings('ignore')
 
 # Third-party imports
 from dotenv import load_dotenv
-import numpy as np
-import pandas as pd
 from scipy import stats
 from scipy.signal import find_peaks
-# Add stdlib utilities for log management
-import gzip
-import glob
-import shutil
-
-import ccxt.async_support as ccxt
+import logging
 import aiohttp
-import openai
-import aiosqlite # Use async-safe sqlite library
+import aiosqlite
 from rich.console import Console
 from rich.table import Table
 from rich.live import Live
@@ -50,7 +46,11 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 import nest_asyncio
 nest_asyncio.apply()
 load_dotenv()
-from backtester import quick_backtest
+try:
+    from backtester import quick_backtest
+except ImportError:
+    log.warning("⚠️ backtester.py not found. Quick backtesting will be disabled.")
+    quick_backtest = None
 
 # ═══════════════════════════════ CONFIGURATION ═══════════════════════════════
 
@@ -218,7 +218,7 @@ try:
 except Exception:
     pass
 log = logging.getLogger(__name__)
-console = Console()
+
 
 # ═══════════════════════════════ DATA STRUCTURES ═══════════════════════════════
 
@@ -279,6 +279,8 @@ class Strategy:
     created_at: datetime = field(default_factory=datetime.utcnow)
     last_trade: Optional[datetime] = None
     trade_history: List[Dict] = field(default_factory=list)
+    _avg_win_pct: float = 0.0
+    _avg_loss_pct: float = 0.0
 
 @dataclass
 class Position:
@@ -375,8 +377,6 @@ def extract_params(code: str) -> Dict[str, Any]:
     params = {}
     
     # Find common parameter patterns
-    import re
-    
     # Look for assignments like: threshold = 0.5
     number_pattern = r'(\w+)\s*=\s*([\d.]+)'
     for match in re.finditer(number_pattern, code):
@@ -388,8 +388,6 @@ def extract_params(code: str) -> Dict[str, Any]:
 
 def inject_params(code: str, params: Dict[str, Any]) -> str:
     """Inject mutated parameters back into strategy code."""
-    import re
-    
     for param, value in params.items():
         # Replace the parameter value in the code
         pattern = f'{param}\\s*=\\s*[\\d.]+'
@@ -397,6 +395,21 @@ def inject_params(code: str, params: Dict[str, Any]) -> str:
         code = re.sub(pattern, replacement, code)
     
     return code
+
+# ADD THIS HELPER FUNCTION TO THE SANDBOX
+def _detect_psychological_level_proximity(price: float) -> bool:
+    """Helper to check if a price is near a psychological level."""
+    if price <= 0: return False
+    
+    # Define key psychological levels
+    levels = [0.01, 0.05, 0.10, 0.25, 0.50, 0.99, 1.00, 5.00, 9.99, 10.00, 
+              25.00, 50.00, 99.00, 100.00, 250.00, 500.00, 999.00, 1000.00, 10000.00]
+    
+    for level in levels:
+        # Check if price is within 2% of the level
+        if abs(price - level) / level < 0.02:
+            return True
+    return False
 
 # Custom aggregate function for SQLite to calculate standard deviation
 class StdevFunc:
@@ -423,6 +436,20 @@ class StdevFunc:
             return None
         return math.sqrt(self.S / (self.k - 1))
 
+# Safe backtester wrapper
+async def _quick_backtest_safe(code: str, *, symbol: str, timeframe: str, limit: int):
+    try:
+        if inspect.iscoroutinefunction(quick_backtest):
+            return await quick_backtest(code, symbol=symbol, timeframe=timeframe, limit=limit)
+        else:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, lambda: quick_backtest(code, symbol=symbol, timeframe=timeframe, limit=limit)
+            )
+    except Exception as e:
+        log.error(f"Backtest failed: {e}")
+        return {'pnl': 0.0, 'sharpe_like': 0.0, 'win_rate': 0.0, 'trades': 0}
+
 # ═══════════════════════════════ DATABASE ═══════════════════════════════
 
 class Database:
@@ -433,10 +460,33 @@ class Database:
         self.conn = None
 
     async def connect(self):
-        """Establish async connection to the database."""
-        self.conn = await aiosqlite.connect(self.db_path)
-        await self.conn.create_aggregate("STDEV", 1, StdevFunc)
-        await self._init_db()
+        """Establish async connection to the database with retry logic."""
+        for attempt in range(5):  # Increased retries
+            try:
+                self.conn = await aiosqlite.connect(self.db_path, timeout=20.0) # Increased timeout
+                # Enable WAL mode for better concurrency
+                await self.conn.execute("PRAGMA journal_mode=WAL")
+                
+                # The `create_aggregate` method exists on the raw sqlite3 connection object.
+                # We must use run_in_executor to call it safely in an async context.
+                await asyncio.get_running_loop().run_in_executor(
+                    None,
+                    lambda: self.conn._conn.create_aggregate("STDEV", 1, StdevFunc)
+                )
+
+                await self._init_db()
+                log.info("🔗 Database connection successful.")
+                return
+            except aiosqlite.OperationalError as e:
+                if "database is locked" in str(e):
+                    wait_time = 2 ** attempt
+                    log.warning(f"Database is locked. Retrying in {wait_time}s... (Attempt {attempt + 1}/5)")
+                    await asyncio.sleep(wait_time)
+                else:
+                    log.error(f"💀 Database connection failed: {e}")
+                    raise e
+        log.error("💀 Failed to connect to the database after multiple retries.")
+        raise aiosqlite.OperationalError("Database connection failed after multiple retries: database is locked")
 
     async def close(self):
         """Close the database connection."""
@@ -469,28 +519,28 @@ class Database:
         # Strategies table - fixed schema
         await self.conn.execute('''
             CREATE TABLE IF NOT EXISTS strategies (
-                id TEXT PRIMARY KEY,
-                name TEXT,
-                description TEXT,
-                code TEXT,
-                status TEXT,
-                pattern_id TEXT,
-                generation INTEGER,
-                parent_id TEXT,
-                total_trades INTEGER DEFAULT 0,
-                winning_trades INTEGER DEFAULT 0,
-                total_pnl REAL DEFAULT 0,
-                win_rate REAL DEFAULT 0,
-                sharpe_ratio REAL DEFAULT 0,
-                max_drawdown REAL DEFAULT 0,
-                avg_profit REAL DEFAULT 0,
-                position_multiplier REAL DEFAULT 1.0,
-                max_position_pct REAL DEFAULT 0.02,
-                stop_loss REAL DEFAULT 0.05,
-                take_profit REAL DEFAULT 0.15,
-                created_at TIMESTAMP,
-                last_trade TIMESTAMP,
-                trade_history TEXT
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            description TEXT,
+            code TEXT,
+            status TEXT,
+            pattern_id TEXT,
+            generation INTEGER,
+            parent_id TEXT,
+            total_trades INTEGER DEFAULT 0,
+            winning_trades INTEGER DEFAULT 0,
+            total_pnl REAL DEFAULT 0,
+            win_rate REAL DEFAULT 0,
+            sharpe_ratio REAL DEFAULT 0,
+            max_drawdown REAL DEFAULT 0,
+            avg_profit REAL DEFAULT 0,
+            position_multiplier REAL DEFAULT 1.0,
+            max_position_pct REAL DEFAULT 0.02,
+            stop_loss REAL DEFAULT 0.05,
+            take_profit REAL DEFAULT 0.15,
+            created_at TIMESTAMP,
+            last_trade TIMESTAMP,
+            trade_history TEXT
             )
         ''')
         
@@ -582,10 +632,6 @@ class Database:
             pattern.success_count
         ))
         await self.conn.commit()
-
-    async def get_seen_markets(self, exchange: str) -> set:
-        async with self.conn.execute('SELECT symbol FROM seen_markets WHERE exchange = ?', (exchange,)) as cursor:
-            return {row[0] for row in await cursor.fetchall()}
 
     async def mark_market_seen(self, exchange: str, symbol: str):
         await self.conn.execute('INSERT OR IGNORE INTO seen_markets(exchange, symbol, first_seen) VALUES(?, ?, ?)', (exchange, symbol, datetime.utcnow().isoformat()))
@@ -860,206 +906,25 @@ class OpenAIManager:
         self._token_budget_per_hour = int(os.getenv("OPENAI_TOKENS_PER_HOUR", "200000"))
         self._token_used_window = 0
         self._window_start_ts = time.time()
-        
-    async def generate_strategy(self, prompt: str) -> str:
-        """
-        Generate strategy code from a prompt using GPT-4.
-        Returns Python code for the strategy.
-        """
-        try:
-            # Check cache
-            cache_key = hashlib.sha256(prompt.encode()).hexdigest()
-            if cache_key in self._generation_cache:
-                return self._generation_cache[cache_key]
-
-            # Token window reset
-            now = time.time()
-            if now - self._window_start_ts >= 3600:
-                self._window_start_ts = now
-                self._token_used_window = 0
-
-            # Simple budget check
-            est_tokens = min(2000, self._token_budget_per_hour)  # rough estimate
-            if self._token_used_window + est_tokens > self._token_budget_per_hour:
-                log.warning("⚠️ OpenAI token budget reached for this hour. Skipping generation.")
-                return """
-async def execute_strategy(state, opp):
-    return {"action": "hold", "conf": 0.0, "reason": "Budget limit"}
-"""
-
-            response = await self.client.chat.completions.create(
-                model="gpt-4-turbo",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert Python programmer specializing in algorithmic trading. Generate complete, working async Python functions for trading strategies."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.7,
-                max_tokens=2000
-            )
-            
-            code = response.choices[0].message.content
-            
-            if response.usage:
-                self.total_tokens_used += response.usage.total_tokens
-                self.generation_count += 1
-                self._token_used_window += response.usage.total_tokens
-                log.info(f"🤖 Generated strategy #{self.generation_count} ({response.usage.total_tokens} tokens)")
-
-            if "```python" in code:
-                code = code.split("```python")[1].split("```")[0]
-            elif "```" in code:
-                code = code.split("```")[1].split("```")[0]
-            
-            code = code.strip()
-            # Cache result
-            self._generation_cache[cache_key] = code
-            return code
-            
-        except Exception as e:
-            log.error(f"OpenAI generation failed: {e}")
-            return """
-async def execute_strategy(state, opp):
-    '''Fallback strategy due to generation error'''
-    return {"action": "hold", "conf": 0.0}
-"""
-
-    async def analyze_market_sentiment(self, news_items: List[str]) -> Dict[str, float]:
-        """
-        Analyze sentiment from news items.
-        Returns sentiment scores for different aspects.
-        """
-        if not news_items:
-            return {"overall": 0.0, "confidence": 0.0}
-        
-        try:
-            prompt = f"""
-Analyze the sentiment of these crypto market news items.
-Return scores from -1 (very bearish) to +1 (very bullish):
-
-News items:
-{chr(10).join(news_items[:10])}
-
-Provide JSON with: overall, bitcoin, altcoins, defi, confidence
-"""
-            
-            response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=200,
-                response_format={"type": "json_object"}
-            )
-            
-            content = response.choices[0].message.content
-            sentiment = json.loads(content)
-            return sentiment
-            
-        except Exception as e:
-            log.error(f"Sentiment analysis failed: {e}")
-            return {"overall": 0.0, "confidence": 0.0}
-
-# ═══════════════════════════════ TELEGRAM NOTIFIER ═══════════════════════════════
 
 class TelegramNotifier:
-    """Sends important alerts and updates via Telegram."""
-    
-    def __init__(self, bot_token: str, chat_id: str):
-        self.bot_token = bot_token
+    """A mock notifier that logs alerts instead of sending them."""
+    def __init__(self, token: str, chat_id: str):
+        self.token = token
         self.chat_id = chat_id
-        self.base_url = f"https://api.telegram.org/bot{bot_token}"
-        self.last_message_time = {}
-        self.rate_limit = 1  # Minimum seconds between messages
-        
+        # Suppress warnings about unused variables
+        _ = self.token
+        _ = self.chat_id
+        log.info("TelegramNotifier initialized (mocked).")
+
     async def send_alert(self, message: str, parse_mode: str = "Markdown"):
-        """Send an alert message to Telegram."""
-        # Rate limiting
-        current_time = time.time()
-        if message in self.last_message_time:
-            if current_time - self.last_message_time[message] < 60:  # Don't repeat same message within 60s
-                return
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                url = f"{self.base_url}/sendMessage"
-                data = {
-                    "chat_id": self.chat_id,
-                    "text": message[:4096],  # Telegram message limit
-                    "parse_mode": parse_mode
-                }
-                
-                async with session.post(url, json=data) as response:
-                    if response.status == 200:
-                        self.last_message_time[message] = current_time
-                        log.debug(f"📨 Telegram alert sent")
-                    else:
-                        log.error(f"Telegram send failed: {await response.text()}")
-                        
-        except Exception as e:
-            log.error(f"Telegram notification error: {e}")
-    
+        log.info(f"TELEGRAM ALERT ({parse_mode}):\n{message}")
+
     async def send_daily_report(self, state: SystemState, top_strategies: List[Strategy]):
-        """Send daily performance report."""
-        # Calculate metrics
-        roi = (state.equity - Config.INITIAL_CAPITAL) / Config.INITIAL_CAPITAL * 100
-        days_running = (datetime.utcnow() - state.start_time).days + 1
-        daily_roi = roi / days_running if days_running > 0 else 0
-        
-        # Build report
-        report = f"""
-📊 **v26meme Daily Report**
+        report = f"Daily Report: Equity ${state.equity:.2f}, PNL ${state.daily_pnl:.2f}"
+        log.info(f"TELEGRAM REPORT:\n{report}")
 
-💰 **Performance**
-• Equity: ${state.equity:.2f}
-• ROI: {roi:+.1f}%
-• Daily Avg: {daily_roi:+.1f}%
-• Today's P&L: ${state.daily_pnl:+.2f}
-🎯 **Strategy Performance**
-"""
-        
-        for i, strategy in enumerate(top_strategies[:5], 1):
-            report += f"\n{i}. {strategy.name}"
-            report += f"\n   Win Rate: {strategy.win_rate:.1%} | Sharpe: {strategy.sharpe_ratio:.2f}"
-            report += f"\n   P&L: ${strategy.total_pnl:.2f} | Trades: {strategy.total_trades}"
-        
-        report += f"\n\n📈 **Active Positions**: {len(state.positions)}"
-        report += f"\n🧬 **Active Strategies**: {len([s for s in state.strategies.values() if s.status == StrategyStatus.ACTIVE])}"
-        
-        # Add phase-specific info
-        phase = self._determine_growth_phase(state)
-        report += f"\n\n🚀 **Growth Phase**: {phase}"
-        
-        if phase == "Discovery":
-            report += "\n*Focus: Finding patterns, testing many strategies*"
-        elif phase == "Optimization":
-            report += "\n*Focus: Refining winners, increasing position sizes*"
-        elif phase == "Scaling":
-            report += "\n*Focus: Maximizing proven strategies*"
-        else:
-            report += "\n*Focus: Maintaining dominance, risk management*"
-        
-        await self.send_alert(report)
-    
-    def _determine_growth_phase(self, state: SystemState) -> str:
-        """Determines the current growth phase based on equity."""
-        equity = state.equity
-        initial = Config.INITIAL_CAPITAL
-        
-        if equity < initial * 5:  # Up to $1K
-            return "Discovery"
-        elif equity < initial * 50:  # Up to $10K
-            return "Optimization"
-        elif equity < initial * 500:  # Up to $100K
-            return "Scaling"
-        else:  # Above $100K
-            return "Domination"
-
-# ═══════════════════════════ PATTERN DISCOVERY ENGINE ═════════════════════════
+# ═══════════════════════════════ PATTERN DISCOVERY ENGINE ═════════════════════════
 
 class PatternDiscoveryEngine:
     """
@@ -1793,7 +1658,7 @@ class PatternDiscoveryEngine:
                                                 abs(df['high'].iloc[idx:idx+6].max() - entry_price),
                                                 abs(entry_price - df['low'].iloc[idx:idx+6].min())
                                             )
-                                            straddle_pnl = max_move / entry_price - 0.002  # Assume 0.2% cost
+                                            straddle_pnl = max_move / entry_price - 0.002   # Assume 0.2% cost
                                             straddle_results.append(straddle_pnl)
                                     
                                     if len(straddle_results) >= 5:
@@ -2257,89 +2122,58 @@ class AdaptiveStrategyEngine:
         
         patterns = await self.learning_memory.get_high_confidence_patterns(limit=5)
         phase = self._determine_growth_phase(state)
-        
         for pattern in patterns:
-            # Skip if we already have a strategy for this exact pattern
-            strategy_name = f"Strat_{pattern['type']}_{int(time.time())}"
-            
-            # Check for existing similar strategies
-            existing_similar = any(
-                s.pattern_id == pattern.get('id') and s.status != StrategyStatus.RETIRED 
-                for s in state.strategies.values()
-            )
-            
-            if existing_similar:
-                log.debug(f"Skipping pattern {pattern['id']}: similar strategy exists")
-                continue
-            
-            # Create enhanced prompt with specific pattern details
+            await self._create_new_strategy(pattern, state)
+
+    async def _create_new_strategy(self, pattern: dict, state: SystemState):
+        """Generate, validate, and save a new strategy from a pattern."""
+        try:
             prompt = self._create_prompt_from_pattern(pattern, state)
             
-            try:
-                generated_code = await self.ai_manager.generate_strategy(prompt)
-                
-                # Validate generated code
-                if "async def execute_strategy" not in generated_code:
-                    log.warning(f"Invalid code generated for pattern {pattern.get('id', 'unknown')}")
-                    continue
-                
-                # Backtest gate before adding to PAPER
+            # Generate code using OpenAI
+            strategy_code = await self.ai_manager.generate_strategy(prompt)
+            
+            # Basic validation
+            if not strategy_code or "def execute_strategy" not in strategy_code:
+                log.error("Generated code is invalid or empty.")
+                return
+
+            # Create strategy object
+            strategy_id = f"strat_{pattern['type']}_{int(time.time())}"
+            strategy_name = f"{pattern['type'].replace('_', ' ').title()} v1"
+            
+            strategy = Strategy(
+                id=strategy_id,
+                name=strategy_name,
+                description=f"Generated from pattern: {pattern['description']}",
+                code=strategy_code,
+                status=StrategyStatus.PAPER,
+                pattern_id=pattern['id'],
+                generation=1
+            )
+
+            # Quick backtest before adding to paper trading
+            if quick_backtest:
                 try:
-                    metrics = await quick_backtest(
-                        generated_code,
-                        symbol=pattern.get('symbol', 'ETH/USDT') or 'ETH/USDT',
-                        timeframe='5m',
-                        limit=200
-                    )
+                    backtest_result = await _quick_backtest_safe(strategy.code, symbol=random.choice(['BTC/USDT', 'ETH/USDT']), timeframe='15m', limit=1000)
+                    
+                    if backtest_result and backtest_result.get('pnl', 0) > 0 and backtest_result.get('win_rate', 0) > 0.51:
+                        log.info(f"🧬 Strategy {strategy.name} passed quick backtest. Promoting to PAPER. PNL: {backtest_result.get('pnl', 0):.2f}, Win Rate: {backtest_result.get('win_rate', 0):.2f}")
+                    else:
+                        strategy.status = StrategyStatus.RETIRED
+                        log.info(f"🧬 Strategy {strategy.name} failed quick backtest and was retired. PNL: {backtest_result.get('pnl', 0):.2f}, Win Rate: {backtest_result.get('win_rate', 0):.2f}")
+
                 except Exception as e:
-                    log.error(f"Backtest failed: {e}")
-                    metrics = {'pnl': 0.0, 'sharpe_like': 0.0, 'win_rate': 0.0, 'trades': 0}
-
-                # Phase-based thresholds
-                if phase == "Discovery":
-                    # Lenient gate in Discovery to let PAPER learn
-                    min_pnl, min_sharpe, min_wr = 0.0, 0.0, 0.50
-                elif phase == "Optimization":
-                    min_pnl, min_sharpe, min_wr = 5.0, 0.8, 0.55
-                else:
-                    min_pnl, min_sharpe, min_wr = 10.0, 1.0, 0.58
-
-                gate_ok = (metrics.get('sharpe_like', 0) >= min_sharpe and metrics.get('win_rate', 0) >= min_wr)
-                if phase == "Discovery":
-                    gate_ok = True
-                if not gate_ok:
-                    log.info(
-                        f"🧪 Rejected strategy (pre-gate) PnL={metrics.get('pnl',0):.2f}, "
-                        f"Sharpe~={metrics.get('sharpe_like',0):.2f}, WR={metrics.get('win_rate',0):.1%}"
-                    )
-                    continue
-
-                # Create new strategy
-                new_strategy = Strategy(
-                    id=hashlib.sha256(strategy_name.encode()).hexdigest()[:16],
-                    name=strategy_name,
-                    description=f"Auto-generated from: {pattern['description']}",
-                    code=generated_code,
-                    status=StrategyStatus.PAPER,  # Always start in paper mode
-                    pattern_id=pattern.get('id'),
-                    generation=len([s for s in state.strategies.values() if s.pattern_id == pattern.get('id')]) + 1
-                )
-                
-                # Adjust initial parameters based on phase
-                if phase == "Discovery":
-                    new_strategy.max_position_pct = 0.02  # 2% max
-                elif phase == "Optimization":
-                    new_strategy.max_position_pct = 0.05  # 5% max
-                else:
-                    new_strategy.max_position_pct = 0.10  # 10% max
-                
-                state.strategies[new_strategy.id] = new_strategy
-                await self.db.save_strategy(new_strategy)
-                
-                log.info(f"🌱 Generated new strategy: {new_strategy.name} (Gen {new_strategy.generation})")
-                
-            except Exception as e:
-                log.error(f"Error generating strategy from pattern {pattern.get('id', 'unknown')}: {e}")
+                    log.error(f"Error during quick_backtest for {strategy.name}: {e}")
+                    strategy.status = StrategyStatus.RETIRED # Retire if backtest fails
+            
+            state.strategies[strategy.id] = strategy
+            await self.db.save_strategy(strategy)
+            
+            log.info(f"✨ Created new strategy: {strategy.name} from pattern {pattern['type']}")
+            
+        except Exception as e:
+            log.error(f"Error creating new strategy: {e}")
 
     def _create_prompt_from_pattern(self, pattern: dict, state: SystemState) -> str:
         """Creates an enhanced, detailed prompt for the AI to generate a Python strategy."""
@@ -2880,7 +2714,10 @@ class AutonomousTrader:
         # Initialize notification system
         if Config.TELEGRAM_BOT_TOKEN and Config.TELEGRAM_CHAT_ID:
             self.notifier = TelegramNotifier(Config.TELEGRAM_BOT_TOKEN, Config.TELEGRAM_CHAT_ID)
-            await self.notifier.send_alert("🚀 v26meme starting up...")
+        else:
+            log.warning("⚠️ Telegram credentials not found. Using mock notifier.")
+            self.notifier = TelegramNotifier("mock_token", "mock_chat_id")
+        await self.notifier.send_alert("🚀 v26meme starting up...")
         
         # Initialize learning memory
         self.learning_memory = LearningMemory(self.db)
@@ -3335,7 +3172,7 @@ async def execute_strategy(state, opp):
         
         # Log every strategy evaluation for debugging (removed random sampling)
         if strategies_to_run:
-            log.info(f"🤖 Evaluating {opp['symbol']} (${opp['volume']:,.0f} vol, {opp['change_24h']:.1f}% change) with {len(strategies_to_run)} strategies")
+            log.info(f"🤖 Evaluating {opp['symbol']} (${opp['volume_24h']:,.0f} vol, {opp['change_24h']:.1f}% change) with {len(strategies_to_run)} strategies")
         
         for strategy in strategies_to_run:
             try:
@@ -3350,97 +3187,55 @@ async def execute_strategy(state, opp):
                         log.info(f"📍 Strategy {strategy.name} signals {decision['action']} on {opp['symbol']} (conf: {decision.get('conf', 0):.2f})")
                         # Process the trading decision
                         await self._process_decision(strategy, opp, decision)
-                else:
-                    log.warning(f"⚠️ Strategy {strategy.name} returned None for {opp['symbol']}")
-                    
             except Exception as e:
-                log.error(f"Error executing strategy {strategy.name}: {e}")
+                log.error(f"Error in _execute_strategies for {strategy.name}: {e}")
                 log.error(traceback.format_exc())
-                # Track strategy failures
-                strategy.max_drawdown = max(strategy.max_drawdown, 0.01)  # Penalty for errors
-
-    async def _run_strategy_code(self, strategy: Strategy, opp: Dict) -> Optional[Dict]:
-        """Safely execute strategy code and return decision."""
+    async def _run_strategy_code(self, strategy: Strategy, opp: Dict) -> Dict:
+        """
+        Execute strategy code in a sandboxed environment.
+        This now includes robust validation and security checks.
+        """
         try:
-            # Import libraries that strategies might need
-            import numpy as np
-            import pandas as pd
-            
-            # Create a restricted but functional execution environment
+            # Define the execution environment for the strategy code
             exec_globals = {
                 '__builtins__': {
-                    'len': len,
-                    'abs': abs,
-                    'min': min,
-                    'max': max,
-                    'sum': sum,
-                    'round': round,
-                    'float': float,
-                    'int': int,
-                    'str': str,
-                    'bool': bool,
-                    'dict': dict,
-                    'list': list,
-                    'range': range,
-                    'enumerate': enumerate,
-                    'zip': zip,
-                    'any': any,
-                    'all': all,
-                    # ADD THESE EXCEPTION CLASSES
-                    'Exception': Exception,
-                    'ValueError': ValueError,
-                    'KeyError': KeyError,
-                    'TypeError': TypeError,
-                    'ZeroDivisionError': ZeroDivisionError,
-                    'AttributeError': AttributeError,
-                    'IndexError': IndexError,
-                    # ADD THESE MISSING BUILTINS
-                    'print': lambda *args, **kwargs: None,  # No-op print for strategies
-                    '__name__': '__main__',  # Fake module name
-                    '__build_class__': __build_class__,  # For class definitions
-                    'type': type,
-                    'isinstance': isinstance,
-                    'hasattr': hasattr,
-                    'getattr': getattr,
-                    'setattr': setattr,
-                    'tuple': tuple,
-                    'set': set,
-                    'sorted': sorted,
-                    'reversed': reversed,
-                    'filter': filter,
-                    'map': map,
-                    'callable': callable,
-                    'iter': iter,
-                    'next': next,
-                    'property': property,
-                    'staticmethod': staticmethod,
-                    'classmethod': classmethod,
-                    'super': super,
-                    'object': object,
-                    'None': None,
-                    'True': True,
-                    'False': False
+                    'abs': abs, 'all': all, 'any': any, 'bin': bin, 'bool': bool, 
+                    'bytearray': bytearray, 'bytes': bytes, 'chr': chr, 'dict': dict, 
+                    'divmod': divmod, 'enumerate': enumerate, 'float': float, 'format': format, 
+                    'frozenset': frozenset, 'hex': hex, 'id': id, 'int': int, 'len': len, 
+                    'list': list, 'max': max, 'min': min, 'oct': oct, 'ord': ord, 'pow': pow, 
+                    'range': range, 'repr': repr, 'round': round, 'slice': slice, 'str': str, 
+                    'sum': sum, 'Exception': Exception, 'ValueError': ValueError, 
+                    'TypeError': TypeError, 'ZeroDivisionError': ZeroDivisionError,
+                    'AttributeError': AttributeError, 'IndexError': IndexError,
+                    'print': lambda *args, **kwargs: None,
+                    '__name__': '__main__',
+                    'type': type, 'isinstance': isinstance, 'hasattr': hasattr,
+                    'getattr': getattr, 'setattr': setattr, 'tuple': tuple, 'set': set,
+                    'sorted': sorted, 'reversed': reversed, 'filter': filter, 'map': map,
+                    'callable': callable, 'iter': iter, 'next': next, 'property': property,
+                    'staticmethod': staticmethod, 'classmethod': classmethod, 'super': super,
+                    'object': object, 'None': None, 'True': True, 'False': False
                 },
-                'np': np,  # Provide numpy
-                'pd': pd,  # Provide pandas
+                'np': np,
+                'pd': pd,
                 'datetime': datetime,
-                'timedelta': timedelta,  # ADD THIS
+                'timedelta': timedelta,
                 'math': math,
                 'random': random,
                 'calculate_kelly_position': calculate_kelly_position,
-                # ADD THESE SAFETY FUNCTIONS:
                 'safe_divide': lambda a, b, default=0: a / b if b != 0 else default,
                 'safe_get': lambda d, key, default=0: d.get(key, default) if isinstance(d, dict) else default,
                 'detect_psychological_level_proximity': _detect_psychological_level_proximity
             }
             
-            # Reject symbol-hardcoding (but allow normal comparisons)
+            # Reject symbol-hardcoding
             import re, ast
             SYMBOL_EQ_RE = re.compile(r"opp\[['\"]symbol['\"]\]\s*==\s*['\"][A-Z0-9_\-/:]+['\"]")
             if SYMBOL_EQ_RE.search(strategy.code):
                 return {'action': 'hold', 'conf': 0.0, 'reason': 'Symbol-specific logic rejected'}
 
-            # Static code audit: reject dangerous nodes
+            # Static code audit
             try:
                 tree = ast.parse(strategy.code)
                 DISALLOWED_NODES = (ast.Import, ast.ImportFrom, ast.With, ast.Raise, ast.Global, ast.Nonlocal, ast.Lambda)
@@ -3455,30 +3250,20 @@ async def execute_strategy(state, opp):
             # Execute the strategy code
             exec(strategy.code, exec_globals)
             
-            # Call the execute_strategy function with better error handling
+            # Call the execute_strategy function
             if 'execute_strategy' in exec_globals:
                 try:
                     import asyncio
                     result = await asyncio.wait_for(exec_globals['execute_strategy'](self.state, opp), timeout=0.5)
                     
-                    # VALIDATE AND FIX RESULT
                     if not isinstance(result, dict):
                         log.warning(f"Strategy {strategy.name} returned {type(result)}, not dict")
                         return {'action': 'hold', 'conf': 0.0, 'reason': 'Invalid return type'}
                     
-                    # Ensure required keys exist
-                    if 'action' not in result:
-                        result['action'] = 'hold'
-                    if 'conf' not in result or result['conf'] is None:
-                        result['conf'] = 0.0
-                    
-                    # Ensure conf is a valid number
-                    try:
-                        result['conf'] = float(result.get('conf', 0))
-                    except:
-                        result['conf'] = 0.0
-                    
-                    # Clamp confidence to valid range
+                    if 'action' not in result: result['action'] = 'hold'
+                    if 'conf' not in result or result['conf'] is None: result['conf'] = 0.0
+                    try: result['conf'] = float(result.get('conf', 0))
+                    except: result['conf'] = 0.0
                     result['conf'] = max(0.0, min(1.0, result['conf']))
                     
                     return result

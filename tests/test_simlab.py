@@ -1,7 +1,7 @@
 import pytest
 import os
 import pandas as pd
-from simlab import SimLab, SimRun
+from simlab import SimLab
 
 # Mock strategy and opportunity for testing
 class MockStrategy:

@@ -6,13 +6,13 @@ Fetches OHLCV via public exchange API and simulates decisions.
 
 import asyncio
 import math
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import ccxt.async_support as ccxt
 
 
 def _build_opp_from_candle(symbol: str, candle: List[float], last24: List[List[float]]) -> Dict:
-    ts, o, h, l, c, v = candle
+    ts, o, h, low, c, v = candle
     # Approximate 24h stats from last 288 x 5m candles if provided
     prices = [cndl[4] for cndl in last24] or [c]
     high24 = max(prices) if prices else c

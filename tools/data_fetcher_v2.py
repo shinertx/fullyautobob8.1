@@ -12,16 +12,12 @@ Engineering improvements:
 import asyncio
 import aiohttp
 import pandas as pd
-import ccxt.async_support as ccxt
 import os
-import time
 import psutil  # For disk space monitoring
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Optional
 import argparse
-import sqlite3
 import signal
-import sys
 
 class DataFetcherV2:
     """Optimized data fetcher for massive scale SimLab operations"""
@@ -78,7 +74,7 @@ class DataFetcherV2:
         
     def _shutdown_handler(self, signum, frame):
         """Graceful shutdown on CTRL+C"""
-        print(f"\n🛑 Shutdown signal received. Finishing current downloads...")
+        print("\n🛑 Shutdown signal received. Finishing current downloads...")
         self.running = False
         
     async def __aenter__(self):
@@ -278,8 +274,8 @@ class DataFetcherV2:
         """Optimized background fetching with intelligent prioritization"""
         print(f"🚀 Starting BACKGROUND data fetch (max {max_files} files)")
         print(f"📊 Target: {len(self.symbols)} symbols × {len(self.timeframes)} timeframes")
-        print(f"🗜️ Using Parquet format for optimal storage")
-        print(f"🔄 Background-safe (can CTRL+C anytime)")
+        print("🗜️ Using Parquet format for optimal storage")
+        print("🔄 Background-safe (can CTRL+C anytime)")
         
         # Create prioritized task list
         tasks = []
@@ -332,11 +328,11 @@ class DataFetcherV2:
                     print(f"💾 Stats: {self.stats['files_created']} files, {self.stats['total_candles']:,} candles, {self.stats['disk_saved_mb']:.0f}MB saved")
                     
         except KeyboardInterrupt:
-            print(f"\n🛑 Interrupted by user. Gracefully shutting down...")
+            print("\n🛑 Interrupted by user. Gracefully shutting down...")
             self.running = False
         
         # Final stats
-        print(f"\n🎉 Background fetch complete!")
+        print("\n🎉 Background fetch complete!")
         print(f"📁 Created: {self.stats['files_created']} files")
         print(f"📊 Total candles: {self.stats['total_candles']:,}")
         print(f"💾 Disk space saved: {self.stats['disk_saved_mb']:.0f}MB vs CSV")
@@ -390,13 +386,13 @@ async def main():
         create_background_script()
         return
     
-    print(f"🚀 Data Fetcher v2 - Optimized for SimLab")
-    print(f"================================")
+    print("🚀 Data Fetcher v2 - Optimized for SimLab")
+    print("================================")
     if args.background:
-        print(f"🌙 Background mode: Safe for laptop travel")
+        print("🌙 Background mode: Safe for laptop travel")
     print(f"💾 Max files: {args.max_files}")
     print(f"📂 Data dir: {args.data_dir}")
-    print(f"🗜️ Format: Parquet (90% smaller than CSV)")
+    print("🗜️ Format: Parquet (90% smaller than CSV)")
     
     async with DataFetcherV2(args.data_dir) as fetcher:
         await fetcher.run_background_fetch(
