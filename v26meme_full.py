@@ -71,26 +71,56 @@ class Config:
     # Exchange Configuration
     @staticmethod
     def get_exchanges():
-        exchanges = {}
-        
-        # Coinbase (for USA users)
-        if os.getenv('COINBASE_API_KEY') and os.getenv('COINBASE_SECRET'):
-            exchanges['coinbase'] = {
-                'apiKey': os.getenv('COINBASE_API_KEY'),
-                'secret': os.getenv('COINBASE_SECRET'),
-                'enableRateLimit': True,
-                'options': {'defaultType': 'spot'}
-            }
+        """Instantiate async ccxt exchanges based on env, preferring Coinbase Advanced if available."""
+        ex = {}
+        try:
+            import ccxt.async_support as ccxt  # local import to avoid import-time failures
+        except Exception as e:
+            log.warning(f"⚠️ ccxt not available: {e}")
+            return ex
 
-        # Kraken (for USA users)
-        if os.getenv('KRAKEN_API_KEY') and os.getenv('KRAKEN_SECRET'):
-            exchanges['kraken'] = {
-                'apiKey': os.getenv('KRAKEN_API_KEY'),
-                'secret': os.getenv('KRAKEN_SECRET'),
-                'enableRateLimit': True
-            }
-            
-        return exchanges
+        # Coinbase Advanced Trade (PEM secret), fallback to legacy 'coinbase'
+        cb_key = os.getenv('COINBASE_API_KEY')
+        cb_secret = os.getenv('COINBASE_SECRET')
+        if cb_key and cb_secret:
+            try:
+                ex_cls = getattr(ccxt, "coinbaseadvanced")
+                ex_id = "coinbaseadvanced"
+            except AttributeError:
+                ex_cls = getattr(ccxt, "coinbase")  # fallback if ccxt lacks coinbaseadvanced
+                ex_id = "coinbase"
+            try:
+                ex[ex_id] = ex_cls({
+                    'apiKey': cb_key,
+                    'secret': cb_secret,
+                    # 'password': os.getenv('COINBASE_PASSWORD'),  # optional for Advanced Trade
+                    'enableRateLimit': True,
+                    'options': {'defaultType': 'spot'}
+                })
+            except Exception as e:
+                log.warning(f"⚠️ Coinbase init failed: {e}")
+
+        # Kraken (spot)
+        kr_key = os.getenv('KRAKEN_API_KEY')
+        kr_sec = os.getenv('KRAKEN_SECRET')
+        if kr_key and kr_sec:
+            try:
+                ex['kraken'] = ccxt.kraken({
+                    'apiKey': kr_key,
+                    'secret': kr_sec,
+                    'enableRateLimit': True
+                })
+            except Exception as e:
+                log.warning(f"⚠️ Kraken init failed: {e}")
+
+        # Public fallback (ensures PAPER scan can work if keys fail)
+        if not ex:
+            try:
+                ex['binance-public'] = ccxt.binance({'enableRateLimit': True})
+            except Exception as e:
+                log.warning(f"⚠️ Public exchange init failed: {e}")
+
+        return ex
     
     # Trading Parameters (env-overridable)
     MIN_TRADE_SIZE = float(os.getenv("MIN_ORDER_NOTIONAL", 10.0))  # Minimum $ per trade
@@ -174,6 +204,7 @@ class Config:
     LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
 # ═══════════════════════════════ LOGGING SETUP ═══════════════════════════════
+log = logging.getLogger(__name__)
 
 def compress_old_logs():
     """Compress previous day daily logs (v26meme_YYYYMMDD.log → .gz), keep today.
@@ -467,12 +498,19 @@ class Database:
                 # Enable WAL mode for better concurrency
                 await self.conn.execute("PRAGMA journal_mode=WAL")
                 
-                # The `create_aggregate` method exists on the raw sqlite3 connection object.
-                # We must use run_in_executor to call it safely in an async context.
-                await asyncio.get_running_loop().run_in_executor(
-                    None,
-                    lambda: self.conn._conn.create_aggregate("STDEV", 1, StdevFunc)
-                )
+                # Robust STDEV aggregate registration
+                try:
+                    raw = getattr(self.conn, "_conn", None)
+                    if raw:
+                        def _reg():
+                            try:
+                                raw.create_aggregate("STDEV", 1, StdevFunc)
+                            except Exception as e:
+                                log.warning(f"⚠️ STDEV aggregate registration failed: {e}")
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, _reg)
+                except Exception as e:
+                    log.warning(f"⚠️ STDEV aggregator setup error: {e}")
 
                 await self._init_db()
                 log.info("🔗 Database connection successful.")
@@ -511,43 +549,6 @@ class Database:
                 parameters TEXT,
                 discovered_at TIMESTAMP,
                 last_seen TIMESTAMP,
-                usage_count INTEGER DEFAULT 0,
-                success_count INTEGER DEFAULT 0
-            )
-        ''')
-        
-        # Strategies table - fixed schema
-        await self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS strategies (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            description TEXT,
-            code TEXT,
-            status TEXT,
-            pattern_id TEXT,
-            generation INTEGER,
-            parent_id TEXT,
-            total_trades INTEGER DEFAULT 0,
-            winning_trades INTEGER DEFAULT 0,
-            total_pnl REAL DEFAULT 0,
-            win_rate REAL DEFAULT 0,
-            sharpe_ratio REAL DEFAULT 0,
-            max_drawdown REAL DEFAULT 0,
-            avg_profit REAL DEFAULT 0,
-            position_multiplier REAL DEFAULT 1.0,
-            max_position_pct REAL DEFAULT 0.02,
-            stop_loss REAL DEFAULT 0.05,
-            take_profit REAL DEFAULT 0.15,
-            created_at TIMESTAMP,
-            last_trade TIMESTAMP,
-            trade_history TEXT
-            )
-        ''')
-        
-        # Trades table
-        await self.conn.execute('''
-            CREATE TABLE IF NOT EXISTS trades (
-                id TEXT PRIMARY KEY,
                 strategy_id TEXT,
                 symbol TEXT,
                 exchange TEXT,
